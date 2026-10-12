@@ -54,7 +54,7 @@ ingestion:
   params: {} # passed to the plugin
 ```
 
-`write_to_icechunk_store` in `data_manager/services/downloader.py` builds a multiscale Zarr pyramid when the grid has more than 1024×1024 pixels; otherwise it writes a flat store. Both hold one time step per chunk; see `docs/zarr_and_geozarr.md`.
+`write_to_icechunk_store` in `data_manager/services/downloader.py` builds a multiscale Zarr pyramid when the grid has more than 1024×1024 pixels; otherwise it writes a flat store. Ingestion and sync write one time step per chunk; see `docs/zarr_and_geozarr.md`.
 
 ## Active design work
 

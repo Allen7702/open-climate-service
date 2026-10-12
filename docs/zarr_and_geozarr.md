@@ -37,7 +37,7 @@ The two halves of the term map directly onto the choices described in this docum
 
 **Analysis-ready** means a consumer can open the data and start computing without preprocessing:
 
-- Dimensions are normalised to `(time, y, x)` regardless of the source convention.
+- Dimensions are normalised regardless of the source convention: time is named `t`, and the spatial dimensions come last as `(y, x)`.
 - Every store records its coordinate reference system in GeoZarr metadata (see [CRS handling](#crs-handling)).
 - Units are standardised by the transform pipeline (e.g. Kelvin → Celsius).
 
@@ -53,7 +53,7 @@ Each managed dataset has exactly one store on disk, under `{data_dir}/rasters/{d
 
 Inside the store, the layout is either:
 
-- **Flat** — a single-resolution Zarr group with dimensions `(time, y, x)`
+- **Flat** — a single-resolution Zarr group
 - **Pyramid** — a multi-resolution Zarr group with levels `0/`, `1/`, `2/`, … where `0/` is full resolution
 
 The flat vs. pyramid decision is made at build time based on spatial size (see [Multiscale pyramids](#multiscale-pyramids) below).
@@ -62,16 +62,16 @@ The flat vs. pyramid decision is made at build time based on spatial size (see [
 
 ## Chunk sizing
 
-**Time:** each chunk holds one time step. Periods are written and appended one at a time, and nothing rechunks along time afterwards. Drawing one date on a map therefore reads only that date's chunks. A long time series for one place reads one chunk per step. The `time` coordinate array itself is chunked in blocks of up to 4096 values, so a client reads the whole axis in a few requests.
+**Time:** a store written by an ingestion or sync holds one time step per chunk. Periods are fetched and appended one at a time, and nothing rechunks along time afterwards, so drawing one date on a map reads only that date's chunks, and a long time series for one place reads one chunk per step. A store published from an openEO job keeps the time chunks of the job's result, which can hold several steps each. The `t` coordinate array is chunked in blocks of up to 4096 values, so a client reads the whole axis in a few requests.
 
 **Space** depends on the layout:
 
 | Layout  | Spatial chunk                                                                          | Example (from a real store)                  |
 | ------- | -------------------------------------------------------------------------------------- | -------------------------------------------- |
-| Flat    | the whole grid                                                                         | 202 × 206 grid → chunk `(1, 202, 206)`       |
+| Flat    | the chunks the data arrived in: the whole grid when the source is read in one piece    | 202 × 206 grid → chunk `(1, 202, 206)`       |
 | Pyramid | planned per level by topozarr for ~500 KB uncompressed, with chunks grouped into shards | 1550 × 1195 grid → chunk `(1, 388, 299)`     |
 
-Dimensions are normalised to `(time, y, x)` before writing, regardless of the source naming convention (`lat`/`lon`, `latitude`/`longitude`, etc.).
+Dimensions are normalised before writing, regardless of the source naming convention (`lat`/`lon`, `latitude`/`longitude`, `time`/`valid_time`, etc.): time is named `t`, and the spatial dimensions come last as `(y, x)`. Most rasters are `(t, y, x)`; some have extra dimensions in between, such as WorldPop's `(t, sex, age_group, y, x)`.
 
 ---
 
