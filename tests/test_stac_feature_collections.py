@@ -332,6 +332,50 @@ def test_the_advertised_asset_url_serves_the_stored_file(client: TestClient, dis
     assert response.content == Path(str(districts.path)).read_bytes()
 
 
+RANGE_EXPOSED = {"content-type", "content-length", "content-range", "accept-ranges", "etag"}
+
+
+def test_the_asset_route_answers_head_with_the_files_size(client: TestClient, districts: ArtifactRecord) -> None:
+    """A client sizes the file with HEAD before reading ranges of it."""
+    response = client.head("/features/districts/data.parquet")
+
+    assert response.status_code == 200
+    assert int(response.headers["content-length"]) == Path(str(districts.path)).stat().st_size
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.content == b""
+
+
+def test_a_cross_origin_range_read_can_see_the_range_headers(client: TestClient, districts: ArtifactRecord) -> None:
+    """Without the exposed headers a browser script on another origin cannot place the bytes."""
+    response = client.get(
+        "/features/districts/data.parquet", headers={"Origin": "https://viewer.example", "Range": "bytes=0-3"}
+    )
+
+    assert response.status_code == 206
+    assert response.content == b"PAR1"
+    assert response.headers["access-control-allow-origin"] == "*"
+    exposed = {name.strip().lower() for name in response.headers["access-control-expose-headers"].split(",")}
+    assert exposed >= RANGE_EXPOSED
+
+
+def test_a_preflight_allows_range_and_conditional_request_headers(client: TestClient) -> None:
+    requested = "range, if-match, if-modified-since, if-none-match, if-unmodified-since"
+
+    response = client.options(
+        "/features/districts/data.parquet",
+        headers={
+            "Origin": "https://viewer.example",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": requested,
+        },
+    )
+
+    assert response.status_code == 200
+    allowed = {name.strip().lower() for name in response.headers["access-control-allow-headers"].split(",")}
+    assert allowed >= {name.strip() for name in requested.split(",")}
+    assert {"GET", "HEAD"} <= {m.strip() for m in response.headers["access-control-allow-methods"].split(",")}
+
+
 def test_the_asset_route_resolves_through_the_record_not_the_directory(
     client: TestClient, districts: ArtifactRecord, isolated_store: Path
 ) -> None:

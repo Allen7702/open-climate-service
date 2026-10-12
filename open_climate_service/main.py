@@ -191,6 +191,11 @@ def create_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        # What a browser reading a file by range (a PMTiles archive, a GeoParquet footer, a Zarr
+        # chunk) needs to see from another origin. Without these a cross-origin script gets the
+        # body but not `Content-Range` or `ETag`, so it cannot place the bytes or tell a changed
+        # file from the one it started reading.
+        expose_headers=["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag"],
     )
 
     @_app.middleware("http")
