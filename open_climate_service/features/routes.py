@@ -86,6 +86,9 @@ def download_feature_collection(collection_id: str) -> FileResponse:
 
 
 @router.get("/{collection_id}/data.pmtiles", response_class=FileResponse)
+# HEAD as well, for a client that sizes the archive before reading ranges of it. Kept out of the
+# OpenAPI schema so the operation is listed once.
+@router.head("/{collection_id}/data.pmtiles", response_class=FileResponse, include_in_schema=False)
 def download_feature_tiles(collection_id: str) -> FileResponse:
     """Serve the PMTiles archive the map viewer draws a published collection from.
 

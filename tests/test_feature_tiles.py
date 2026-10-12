@@ -141,6 +141,10 @@ def test_the_archive_is_served_by_range_and_advertised_in_stac(client: TestClien
     assert response.headers["content-type"] == tiles.PMTILES_MEDIA_TYPE
     assert response.content == archive.read_bytes()[:127]
 
+    head = client.head("/features/districts/data.pmtiles")
+    assert head.status_code == 200 and head.content == b""
+    assert int(head.headers["content-length"]) == archive.stat().st_size
+
 
 def test_the_archive_is_linked_for_web_map_clients(client: TestClient) -> None:
     """The web-map-links `pmtiles` link names the archive and the layer to show."""
