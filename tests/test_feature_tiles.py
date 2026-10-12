@@ -120,8 +120,11 @@ def test_a_failed_tile_build_does_not_fail_the_refresh(
     assert not [p for p in _isolated.iterdir() if p.name.endswith(".writing")]
     # Nothing advertises or serves an archive that is not there.
     assert client.get("/features/districts/data.pmtiles").status_code == 404
-    assets = client.get("/stac/collections/districts").json()["assets"]
-    assert "tiles" not in assets and "data" in assets
+    collection = client.get("/stac/collections/districts").json()
+    assert "tiles" not in collection["assets"] and "style" not in collection["assets"]
+    assert "data" in collection["assets"]
+    assert not [link for link in collection["links"] if link["rel"] == "pmtiles"]
+    assert client.get("/features/districts/styles/default.json").status_code == 404
 
 
 def test_the_archive_is_served_by_range_and_advertised_in_stac(client: TestClient) -> None:
@@ -139,11 +142,55 @@ def test_the_archive_is_served_by_range_and_advertised_in_stac(client: TestClien
     assert response.content == archive.read_bytes()[:127]
 
 
+def test_the_archive_is_linked_for_web_map_clients(client: TestClient) -> None:
+    """The web-map-links `pmtiles` link names the archive and the layer to show."""
+    _refresh()
+
+    collection = client.get("/stac/collections/districts").json()
+
+    (link,) = [link for link in collection["links"] if link["rel"] == "pmtiles"]
+    assert link["href"] == "http://testserver/features/districts/data.pmtiles"
+    assert link["type"] == tiles.PMTILES_MEDIA_TYPE
+    assert link["pmtiles:layers"] == [tiles.TILE_LAYER]
+    assert "https://stac-extensions.github.io/web-map-links/v1.3.0/schema.json" in collection["stac_extensions"]
+
+
+def test_the_style_draws_the_tiles_with_the_collections_attribution(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    template = {**TEMPLATE, "providers": [{"name": "Overture Maps"}]}
+    monkeypatch.setattr(feature_services.feature_templates, "get_feature_template", lambda _id: template)
+    feature_services.refresh_feature_collection(
+        template=template,
+        features={"type": "FeatureCollection", "features": [_box("W", "Western", -13.3, 8.0, -12.5, 8.8)]},
+    )
+
+    asset = client.get("/stac/collections/districts").json()["assets"]["style"]
+    assert asset["href"] == "http://testserver/features/districts/styles/default.json"
+    assert asset["type"] == tiles.STYLE_MEDIA_TYPE and asset["roles"] == ["style"]
+
+    response = client.get("/features/districts/styles/default.json")
+    assert response.headers["content-type"] == tiles.STYLE_MEDIA_TYPE
+    style = response.json()
+    assert style["version"] == 8 and style["name"] == "District boundaries"
+    assert style["sources"] == {
+        "features": {
+            "type": "vector",
+            "url": "pmtiles://http://testserver/features/districts/data.pmtiles",
+            "attribution": "Overture Maps",
+        }
+    }
+    # The viewer's click handlers and clean-up are registered for these layer ids.
+    assert [layer["id"] for layer in style["layers"]] == ["features-fill", "features-line", "features-point"]
+    assert {layer["source-layer"] for layer in style["layers"]} == {tiles.TILE_LAYER}
+
+
 def test_an_unpublished_collection_serves_no_tiles(client: TestClient) -> None:
-    """The same gate as its GeoParquet: STAC withholds it, so this route does too."""
+    """The same gate as its GeoParquet: STAC withholds it, so these routes do too."""
     _refresh(publish=False)
 
     assert client.get("/features/districts/data.pmtiles").status_code == 404
+    assert client.get("/features/districts/styles/default.json").status_code == 404
 
 
 def test_a_superseded_file_takes_its_archive_with_it(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -157,8 +204,10 @@ def test_a_superseded_file_takes_its_archive_with_it(monkeypatch: pytest.MonkeyP
     assert tiles.archive_path(current).is_file()
 
 
-def test_the_viewer_reads_the_layer_the_archive_is_built_with(client: TestClient) -> None:
+def test_the_viewer_draws_with_the_collections_style(client: TestClient) -> None:
     page = client.get("/map").text
 
-    assert f'const TILE_LAYER = "{tiles.TILE_LAYER}";' in page
     assert 'maplibregl.addProtocol("pmtiles"' in page
+    assert "const styleHref = collection.assets?.style?.href;" in page
+    assert "for (const layer of style.layers) map.addLayer(layer);" in page
+    assert 'const FEATURE_LAYERS = ["features-fill", "features-line", "features-point"];' in page

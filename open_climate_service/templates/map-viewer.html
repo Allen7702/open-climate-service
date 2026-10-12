@@ -802,16 +802,12 @@
         }
       }
 
-      // A vector dataset: its tiles as one source, and a fill, outline and point layer over it. The ids are fixed, so taking them down is one place and a second dataset never
-      // collides.
+      // A vector dataset is drawn with the MapLibre style the collection publishes as its
+      // `style` asset (features/tiles.py): its tiles as one source, and a fill, outline and
+      // point layer over it. The style's ids are fixed, so taking them down is one place and a
+      // second dataset never collides.
       const FEATURE_SOURCE = "features";
-      // The layer name inside every collection's archive (features/tiles.py, TILE_LAYER).
-      const TILE_LAYER = "features";
       const FEATURE_LAYERS = ["features-fill", "features-line", "features-point"];
-      // Both spellings: MapLibre reports a multi-part feature as `MultiPolygon` and so on.
-      const AREA_TYPES = ["Polygon", "MultiPolygon"];
-      const LINE_TYPES = ["LineString", "MultiLineString"];
-      const POINT_TYPES = ["Point", "MultiPoint"];
       let featurePopup = null;
 
       function clearFeatures() {
@@ -831,54 +827,37 @@
 
       // Every published vector dataset has vector tiles: a refresh builds them with the collection.
       async function loadFeatures(collection, superseded) {
-        // The collection's attribution is on its feature record, not in STAC. An open licence
-        // such as ODbL requires it wherever the data is shown, so it goes on the map. The
-        // source row names the template's providers, as it does for a raster.
+        // The feature record says how many features the collection holds.
         const recordRequest = fetch(`{{ mount }}/features/${encodeURIComponent(collection.id)}`)
           .then((res) => (res.ok ? res.json() : null))
           .catch(() => null);
 
-        const tiles = collection.assets?.tiles;
-        if (!tiles?.href) {
+        const styleHref = collection.assets?.style?.href;
+        if (!styleHref) {
           setStatus("This vector dataset has no vector tiles. Refresh it to build them.", true);
           return;
         }
-        const source = { type: "vector", url: `pmtiles://${new URL(tiles.href, location.href)}` };
+        let style;
+        try {
+          const res = await fetch(styleHref);
+          if (superseded()) return;
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          style = await res.json();
+          if (superseded()) return;
+        } catch (err) {
+          if (superseded()) return;
+          setStatus(`Failed to load the style: ${err.message}`, true);
+          return;
+        }
 
         const record = await recordRequest;
         if (superseded()) return;
         const providers = (collection.providers ?? []).map((p) => p.name).filter(Boolean);
-        const attribution = record?.attribution ?? (providers.join(", ") || null);
-        const layerSource = { source: FEATURE_SOURCE, "source-layer": TILE_LAYER };
 
         try {
-          map.addSource(FEATURE_SOURCE, { ...source, ...(attribution && { attribution }) });
-          map.addLayer({
-            id: "features-fill",
-            type: "fill",
-            ...layerSource,
-            filter: ["in", ["geometry-type"], ["literal", AREA_TYPES]],
-            paint: { "fill-color": "#0066cc", "fill-opacity": 0.15 },
-          });
-          map.addLayer({
-            id: "features-line",
-            type: "line",
-            ...layerSource,
-            filter: ["in", ["geometry-type"], ["literal", [...AREA_TYPES, ...LINE_TYPES]]],
-            paint: { "line-color": "#1e3a5f", "line-width": 1 },
-          });
-          map.addLayer({
-            id: "features-point",
-            type: "circle",
-            ...layerSource,
-            filter: ["in", ["geometry-type"], ["literal", POINT_TYPES]],
-            paint: {
-              "circle-radius": 4,
-              "circle-color": "#0066cc",
-              "circle-stroke-color": "#fff",
-              "circle-stroke-width": 1,
-            },
-          });
+          // The source carries the attribution an open licence such as ODbL requires.
+          for (const [id, source] of Object.entries(style.sources)) map.addSource(id, source);
+          for (const layer of style.layers) map.addLayer(layer);
           for (const layer of map.getStyle().layers) {
             if (layer.type === "symbol") map.moveLayer(layer.id);
           }

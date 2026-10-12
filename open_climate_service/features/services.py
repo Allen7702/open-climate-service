@@ -549,6 +549,17 @@ def published_collection_tiles_or_404(collection_id: str) -> Path:
     return path
 
 
+def published_collection_style_or_404(collection_id: str, tiles_url: str) -> dict[str, Any]:
+    """Return the MapLibre style of a published collection, or raise 404 when it has no tiles.
+
+    `tiles_url` is the absolute URL of its archive, which the caller knows from the request.
+    """
+    published_collection_tiles_or_404(collection_id)
+    record = ingestion_services.stac_eligible_artifacts_by_dataset()[collection_id]
+    template = feature_templates.get_feature_template(record.dataset_id) or {}
+    return tiles.style(record.dataset_name, tiles_url, _feature_attribution(template))
+
+
 def _build_record(collection_id: str, record: ArtifactRecord, template: dict[str, Any]) -> FeatureCollectionRecord:
     """Build one response row from a record and its already-resolved template.
 

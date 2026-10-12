@@ -375,7 +375,7 @@ def test_an_unpublished_dataset_in_the_address_is_reported_not_ignored(client: T
 
 
 def test_the_map_viewer_lists_vector_datasets_and_draws_their_tiles(client: TestClient) -> None:
-    """Published vector datasets are drawn from the PMTiles archive their STAC `tiles` asset names."""
+    """Published vector datasets are drawn with the style their STAC `style` asset names."""
     body = client.get("/map").text
 
     assert 'import { Protocol as PMTilesProtocol } from "https://esm.sh/pmtiles@' in body
@@ -384,10 +384,10 @@ def test_the_map_viewer_lists_vector_datasets_and_draws_their_tiles(client: Test
     assert 'fetch("/datasets"' not in body
     assert "publication?.status" not in body
     assert 'if (collection.assets?.data?.type === "application/x-parquet") {' in body
-    assert "const tiles = collection.assets?.tiles;" in body
-    # The source names the providers, the attribution goes on the map; vectors have no units.
+    assert "const styleHref = collection.assets?.style?.href;" in body
+    # The style's source carries the attribution; vectors have no units.
     assert "fetch(`/features/${encodeURIComponent(collection.id)}`)" in body
-    assert "map.addSource(FEATURE_SOURCE, { ...source, ...(attribution && { attribution }) });" in body
+    assert "for (const [id, source] of Object.entries(style.sources)) map.addSource(id, source);" in body
     assert 'metaSource.textContent = providers.join(", ") || "—";' in body
     assert "showUnits(null);" in body
     assert 'map.on("click", id, showFeatureName);' in body

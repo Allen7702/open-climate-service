@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import tempfile
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from open_climate_service.shared.crs import canonical_crs_code
@@ -21,6 +22,7 @@ from open_climate_service.shared.crs import canonical_crs_code
 logger = logging.getLogger(__name__)
 
 PMTILES_MEDIA_TYPE = "application/vnd.pmtiles"
+STYLE_MEDIA_TYPE = "application/vnd.mapbox.style+json"
 
 TILE_LAYER = "features"
 """The MVT layer name. One name for every collection, so the viewer never has to look it up."""
@@ -78,3 +80,55 @@ def build_archive(collection_path: Path, collection_id: str, crs: str) -> Path |
     finally:
         staging.unlink(missing_ok=True)
     return target
+
+
+# Both spellings: MapLibre reports a multi-part feature as `MultiPolygon` and so on.
+_AREA_TYPES = ["Polygon", "MultiPolygon"]
+_LINE_TYPES = ["LineString", "MultiLineString"]
+_POINT_TYPES = ["Point", "MultiPoint"]
+
+
+def style(name: str, tiles_url: str, attribution: str | None) -> dict[str, Any]:
+    """The MapLibre style a collection is drawn with: its tiles as filled areas, lines and points.
+
+    Self-contained, so any MapLibre client can load it as it is, and the map viewer draws from
+    it too, so the two never disagree. The attribution travels with the source: an open
+    licence such as ODbL requires it wherever the data is shown.
+    """
+    source: dict[str, Any] = {"type": "vector", "url": f"pmtiles://{tiles_url}"}
+    if attribution:
+        source["attribution"] = attribution
+    on_tiles = {"source": TILE_LAYER, "source-layer": TILE_LAYER}
+    return {
+        "version": 8,
+        "name": name,
+        "sources": {TILE_LAYER: source},
+        "layers": [
+            {
+                "id": "features-fill",
+                "type": "fill",
+                **on_tiles,
+                "filter": ["in", ["geometry-type"], ["literal", _AREA_TYPES]],
+                "paint": {"fill-color": "#0066cc", "fill-opacity": 0.15},
+            },
+            {
+                "id": "features-line",
+                "type": "line",
+                **on_tiles,
+                "filter": ["in", ["geometry-type"], ["literal", _AREA_TYPES + _LINE_TYPES]],
+                "paint": {"line-color": "#1e3a5f", "line-width": 1},
+            },
+            {
+                "id": "features-point",
+                "type": "circle",
+                **on_tiles,
+                "filter": ["in", ["geometry-type"], ["literal", _POINT_TYPES]],
+                "paint": {
+                    "circle-radius": 4,
+                    "circle-color": "#0066cc",
+                    "circle-stroke-color": "#fff",
+                    "circle-stroke-width": 1,
+                },
+            },
+        ],
+    }

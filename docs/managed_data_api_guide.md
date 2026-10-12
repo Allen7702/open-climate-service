@@ -34,6 +34,7 @@ Operational note:
 - `GET /features/{collection_id}`
 - `GET /features/{collection_id}/data.parquet`
 - `GET /features/{collection_id}/data.pmtiles`
+- `GET /features/{collection_id}/styles/default.json`
 - `GET /stac`
 - `GET /stac/catalog.json`
 - `GET /stac/collections/{dataset_id}`
@@ -547,6 +548,12 @@ archive the map viewer draws from, with range requests. Every refresh builds it 
 GeoParquet, simplified per zoom, so it is for display only: aggregation reads the GeoParquet. A
 failed build is logged and does not fail the refresh; the route then answers 404 and the STAC
 collection has no `tiles` asset.
+
+`GET /features/{collection_id}/styles/default.json` serves the MapLibre style the map viewer
+draws a collection with: its tiles as filled areas, lines and points, with the collection's
+attribution on the source. The STAC collection lists it as its `style` asset, and names the
+archive and its layer in a `pmtiles` link (web-map-links extension), whenever the collection has
+tiles.
 
 ## 12. `/sync`
 

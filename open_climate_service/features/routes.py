@@ -1,13 +1,14 @@
 """FastAPI routes for registered feature collections."""
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from open_climate_service.features import services
 from open_climate_service.features.schemas import FeatureCollectionListResponse, FeatureCollectionRecord
-from open_climate_service.features.tiles import PMTILES_MEDIA_TYPE
+from open_climate_service.features.tiles import PMTILES_MEDIA_TYPE, STYLE_MEDIA_TYPE
 from open_climate_service.ingestions.job_submission import INGESTION_JOB_HREF_BASE
 from open_climate_service.shared.geoparquet import PARQUET_MEDIA_TYPE
+from open_climate_service.shared.urls import absolute_url, path_segment
 
 router = APIRouter()
 
@@ -94,3 +95,15 @@ def download_feature_tiles(collection_id: str) -> FileResponse:
     """
     path = services.published_collection_tiles_or_404(collection_id)
     return FileResponse(path, media_type=PMTILES_MEDIA_TYPE, filename=f"{collection_id}.pmtiles")
+
+
+@router.get("/{collection_id}/styles/default.json")
+def feature_style(collection_id: str, request: Request) -> JSONResponse:
+    """Serve the MapLibre style a published collection is drawn with, over its vector tiles.
+
+    Advertised as the collection's `style` STAC asset whenever it has tiles. The map viewer draws
+    from it, so any other MapLibre client draws the collection the same way.
+    """
+    tiles_url = absolute_url(request, f"/features/{path_segment(collection_id)}/data.pmtiles")
+    style = services.published_collection_style_or_404(collection_id, tiles_url)
+    return JSONResponse(style, media_type=STYLE_MEDIA_TYPE)
