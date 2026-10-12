@@ -408,8 +408,7 @@ def _dataset_page_context(
         "status_facts": present(status),
         "links": [link for link in record.links if link.rel != "self"],
         "published": summary["status"] == "published",
-        # A feature collection has no colour scale and the map viewer draws only rasters, so
-        # the page offers neither for one.
+        # A feature collection has no colour scale, so the page offers none for one.
         "vector": vector,
         # Only where the data source page offers a fetch: a provider this instance has.
         "refresh_href": f"/data-sources/{template['id']}" if vector and template and refreshable else None,
