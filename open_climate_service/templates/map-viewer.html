@@ -649,7 +649,7 @@
         }
 
         const featureAsset = collection.assets?.data;
-        if (featureAsset?.type === "application/x-parquet") {
+        if (featureAsset?.type === "application/vnd.apache.parquet") {
           await loadFeatures(collection, featureAsset, superseded);
           return;
         }

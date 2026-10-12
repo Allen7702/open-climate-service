@@ -270,7 +270,8 @@ def test_a_declared_licence_and_attribution_reach_the_collection(
     assert doc["license"] == "CC-BY-4.0"
     assert doc["description"] == "District boundaries from the national hierarchy."
     assert doc["providers"] == [
-        {"name": "Ministry of Health", "url": "https://moh.example", "roles": ["producer", "licensor"]}
+        {"name": "Ministry of Health", "url": "https://moh.example", "roles": ["producer", "licensor"]},
+        HOST,
     ]
 
 
@@ -299,14 +300,93 @@ def test_a_licence_with_only_a_url_travels_as_a_link(
 def test_an_undeclared_licence_is_not_invented(
     client: TestClient, districts: ArtifactRecord, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`other` rather than something that reads as permissive, and no providers out of nowhere."""
+    """`other` rather than something that reads as permissive, and no producer out of nowhere."""
     _declare_template(monkeypatch, None)
 
     doc = client.get("/stac/collections/districts").json()
 
     assert doc["license"] == "other"
-    assert "providers" not in doc
+    assert doc["providers"] == [HOST]
     assert not [link for link in doc["links"] if link["rel"] == "license"]
+
+
+HOST = {"name": "Open Climate Service", "roles": ["host"], "url": "http://testserver/"}
+
+
+def test_this_instance_is_the_one_host_listed_last(
+    client: TestClient, districts: ArtifactRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A template's own `host` role is dropped: only this instance hosts the copy it serves."""
+    _declare_template(monkeypatch, {"providers": [{"name": "Upstream", "roles": ["producer", "host"]}]})
+
+    doc = client.get("/stac/collections/districts").json()
+
+    assert doc["providers"] == [{"name": "Upstream", "roles": ["producer"]}, HOST]
+
+
+def test_a_mirrored_collection_links_its_source_and_when_it_was_refreshed(
+    client: TestClient, districts: ArtifactRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _declare_template(
+        monkeypatch,
+        {"source_url": "https://source.example/divisions", "source_stac": "https://stac.source.example/catalog.json"},
+    )
+
+    doc = client.get("/stac/collections/districts").json()
+
+    links = {link["rel"]: link for link in doc["links"]}
+    assert links["via"]["href"] == "https://source.example/divisions" and links["via"]["type"] == "text/html"
+    assert links["canonical"]["href"] == "https://stac.source.example/catalog.json"
+    assert links["canonical"]["type"] == "application/json"
+    assert doc["updated"] == districts.created_at.isoformat().replace("+00:00", "Z")
+
+
+def test_a_collection_without_a_declared_source_has_no_source_links(
+    client: TestClient, districts: ArtifactRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _declare_template(monkeypatch, None)
+
+    rels = {link["rel"] for link in client.get("/stac/collections/districts").json()["links"]}
+
+    assert not rels & {"via", "canonical"}
+
+
+def test_the_catalog_and_a_feature_collection_link_a_readme_and_agents_guide(
+    client: TestClient, districts: ArtifactRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _declare_template(
+        monkeypatch,
+        {
+            "license": "CC-BY-4.0",
+            "description": "District boundaries from the national hierarchy.",
+            "providers": [{"name": "Ministry of Health", "roles": ["producer"]}],
+            "source_url": "https://moh.example/hierarchy",
+        },
+    )
+
+    for document_url in ("/stac/catalog.json", "/stac/collections/districts"):
+        links = {link["rel"]: link for link in client.get(document_url).json()["links"]}
+        for rel in ("describedby", "agents"):
+            assert links[rel]["type"] == "text/markdown"
+            response = client.get(links[rel]["href"].removeprefix("http://testserver"))
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/markdown")
+
+    readme = client.get("/stac/collections/districts/README.md").text
+    # Portolan's minimum: title, description, licence and provenance.
+    assert readme.startswith("# District boundaries\n")
+    assert "District boundaries from the national hierarchy." in readme
+    assert "## Licence" in readme and "CC-BY-4.0" in readme
+    assert "Ministry of Health (producer)" in readme and "https://moh.example/hierarchy" in readme
+    agents = client.get("/stac/collections/districts/AGENTS.md").text
+    assert "http://testserver/features/districts/data.parquet" in agents and "`orgUnitCode`" in agents
+    catalog = client.get("/stac/README.md").text
+    assert "[District boundaries](http://testserver/stac/collections/districts) (vector)" in catalog
+
+
+def test_a_raster_or_unknown_collection_has_no_readme(client: TestClient) -> None:
+    assert client.get("/stac/collections/nothing_here/README.md").status_code == 404
+    assert client.get("/stac/collections/nothing_here/AGENTS.md").status_code == 404
 
 
 # --- the GeoParquet asset --------------------------------------------------------------------
@@ -315,7 +395,7 @@ def test_an_undeclared_licence_is_not_invented(
 def test_the_data_asset_advertises_the_settled_media_type(client: TestClient, districts: ArtifactRecord) -> None:
     doc = client.get("/stac/collections/districts").json()
 
-    assert doc["assets"]["data"]["type"] == PARQUET_MEDIA_TYPE == "application/x-parquet"
+    assert doc["assets"]["data"]["type"] == PARQUET_MEDIA_TYPE == "application/vnd.apache.parquet"
     assert doc["assets"]["data"]["roles"] == ["data"]
 
 

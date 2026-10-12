@@ -30,6 +30,10 @@
   providers:
     - name: Overture Maps
       url: https://overturemaps.org
+      roles: [producer, licensor]
+  # The extract mirrors Overture: its page, and its own STAC catalog of releases.
+  source_url: https://docs.overturemaps.org/guides/divisions/
+  source_stac: https://stac.overturemaps.org/catalog.json
   id_property: id
   provider: overture
   params:
