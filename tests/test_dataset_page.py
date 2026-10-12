@@ -201,6 +201,15 @@ def test_the_dataset_list_filters_by_type_when_it_holds_both(
     assert body.count('data-kind="vector"') == item_types.count("feature")
 
 
+def test_an_empty_dataset_list_points_to_the_data_sources(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(landing, "_load_datasets", lambda: [])
+
+    body = client.get("/datasets", headers={"Accept": BROWSER_ACCEPT}).text
+
+    assert '<a href="/data-sources">data sources</a>' in body
+    assert "POST /ingestions" not in body
+
+
 def test_the_breadcrumb_returns_to_the_dataset_list(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """The list is a page, so the breadcrumb goes to it rather than a landing-page fragment."""
     from open_climate_service.ingestions import services
