@@ -18,11 +18,10 @@ from .conftest import TEST_DATA_ROOT
 
 
 def _import_every_module() -> None:
+    # No import error is skipped: the suite runs with every extra installed, so a module that
+    # fails to import is broken, and skipping it would leave its store paths unchecked.
     for module in pkgutil.walk_packages(open_climate_service.__path__, prefix="open_climate_service."):
-        try:
-            importlib.import_module(module.name)
-        except ImportError:
-            continue  # an optional dependency this environment lacks; nothing of it to check
+        importlib.import_module(module.name)
 
 
 def test_every_store_path_resolved_at_import_is_inside_the_test_instance() -> None:
