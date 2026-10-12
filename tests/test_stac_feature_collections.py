@@ -341,6 +341,29 @@ def test_a_mirrored_collection_links_its_source_and_when_it_was_refreshed(
     assert doc["updated"] == districts.created_at.isoformat().replace("+00:00", "Z")
 
 
+@pytest.mark.parametrize(("version", "expected"), [("2026-09-23.0", True), (None, False)])
+def test_canonical_names_the_upstream_collection_for_the_release_read(
+    client: TestClient,
+    districts: ArtifactRecord,
+    monkeypatch: pytest.MonkeyPatch,
+    version: str | None,
+    expected: bool,
+) -> None:
+    """`canonical` is the same collection upstream, so it needs the release, or it is left out."""
+    if version is not None:
+        stored = ingestion_services._load_records()[0]
+        stored.version = ArtifactVersion(value=version, authority="overture")
+        ingestion_services._save_records([stored])
+    _declare_template(monkeypatch, {"source_stac": "https://stac.source.example/{version}/area/collection.json"})
+
+    links = [link for link in client.get("/stac/collections/districts").json()["links"] if link["rel"] == "canonical"]
+
+    if expected:
+        assert [link["href"] for link in links] == ["https://stac.source.example/2026-09-23.0/area/collection.json"]
+    else:
+        assert links == []
+
+
 def test_a_collection_without_a_declared_source_has_no_source_links(
     client: TestClient, districts: ArtifactRecord, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -377,11 +400,45 @@ def test_the_catalog_and_a_feature_collection_link_a_readme_and_agents_guide(
     assert readme.startswith("# District boundaries\n")
     assert "District boundaries from the national hierarchy." in readme
     assert "## Licence" in readme and "CC-BY-4.0" in readme
-    assert "Ministry of Health (producer)" in readme and "https://moh.example/hierarchy" in readme
+    assert "- Ministry of Health (producer)" in readme and "https://moh.example/hierarchy" in readme
     agents = client.get("/stac/collections/districts/AGENTS.md").text
     assert "http://testserver/features/districts/data.parquet" in agents and "`orgUnitCode`" in agents
     catalog = client.get("/stac/README.md").text
     assert "[District boundaries](http://testserver/stac/collections/districts) (vector)" in catalog
+
+
+def test_the_readme_lists_the_same_providers_as_the_stac_with_one_host(
+    client: TestClient, districts: ArtifactRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _declare_template(monkeypatch, {"providers": [{"name": "Upstream", "roles": ["producer", "host"]}]})
+
+    readme = client.get("/stac/collections/districts/README.md").text
+
+    assert "- Upstream (producer)\n" in readme
+    assert readme.count("(host)") == 1
+    assert "- [Open Climate Service](http://testserver/) (host)" in readme
+
+
+def test_the_agents_query_quotes_column_names_and_names_the_stored_crs(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A column name with a space stays one name, and a projected collection's bounds are projected."""
+    from open_climate_service.features import services as feature_services
+
+    payload = _collection_payload()
+    for feature in payload["features"]:
+        feature["properties"]['org "unit" code'] = feature["properties"].pop("orgUnitCode")
+    feature_services.refresh_feature_collection(
+        template={"id": "districts", "name": "District boundaries", "id_property": 'org "unit" code'},
+        features=payload,
+        store_crs="EPSG:3857",
+    )
+    monkeypatch.setattr(ingestion_services, "_artifact_storage_exists", lambda _: True)
+
+    agents = client.get("/stac/collections/districts/AGENTS.md").text
+
+    assert 'SELECT "org ""unit"" code", ST_AsText("geometry") FROM' in agents
+    assert "in EPSG:3857 coordinates" in agents and "longitude and latitude" not in agents
 
 
 def test_a_raster_or_unknown_collection_has_no_readme(client: TestClient) -> None:

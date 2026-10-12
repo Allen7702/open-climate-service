@@ -471,8 +471,8 @@ Two things worth knowing about a feature collection's document:
 - **Its last provider is this instance**, with the `host` role and the instance URL. The
   template's providers come first; a `producer` role there says who made the data.
 - **A mirrored source is linked.** A template's `source_url` becomes a `via` link and its
-  `source_stac` a `canonical` link to the source's own STAC. `updated` is when the collection
-  was last refreshed.
+  `source_stac` a `canonical` link to the source's own STAC collection, with `{version}` filled by
+  the release the collection was read from. `updated` is when the collection was last refreshed.
 - **It links a README and an AGENTS guide** (`describedby` and `agents`, `text/markdown`): its
   title, description, licence and provenance, and how to read the GeoParquet. The catalog links
   its own pair, listing every collection.

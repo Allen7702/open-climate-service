@@ -326,7 +326,12 @@ def _build_feature_collection(dataset_id: str, artifact: ArtifactRecord, request
 
     _apply_table_extension(collection, artifact, detail)
     _add_feature_collection_links(
-        collection, dataset_id=dataset_id, request=request, licence=licence, source_dataset=source_dataset
+        collection,
+        dataset_id=dataset_id,
+        request=request,
+        licence=licence,
+        source_dataset=source_dataset,
+        version=artifact.version.value if artifact.version is not None else None,
     )
     collection.add_asset(
         "data",
@@ -422,12 +427,15 @@ def _add_feature_collection_links(
     request: Request,
     licence: DatasetLicence,
     source_dataset: dict[str, Any],
+    version: str | None,
 ) -> None:
     """Attach the same link set a raster collection carries, plus the licence, source and docs.
 
     A collection mirrored from an upstream source links back to it: `via` to the source's page
-    (the template's `source_url`) and `canonical` to the source's own STAC (`source_stac`), so a
-    client can follow the chain to the authoritative metadata.
+    (the template's `source_url`) and `canonical` to the source's own STAC collection
+    (`source_stac`), so a client can follow the chain to the authoritative metadata. `canonical`
+    names that one collection, so a `{version}` in `source_stac` is filled with the release this
+    collection was read from, and the link is left out when there is no version to fill it.
     """
     catalog_href = absolute_url(request, "/stac/catalog.json")
     collection.clear_links()
@@ -455,13 +463,18 @@ def _add_feature_collection_links(
                 title=licence.name or licence.identifier or "Licence",
             )
         )
-    for rel, key, media_type, title in (
-        ("via", "source_url", "text/html", "Source"),
-        ("canonical", "source_stac", "application/json", "Source STAC catalog"),
-    ):
-        href = source_dataset.get(key)
-        if isinstance(href, str) and href.strip():
-            collection.add_link(pystac.Link(rel=rel, target=href.strip(), media_type=media_type, title=title))
+    source_url = source_dataset.get("source_url")
+    if isinstance(source_url, str) and source_url.strip():
+        collection.add_link(pystac.Link(rel="via", target=source_url.strip(), media_type="text/html", title="Source"))
+    source_stac = source_dataset.get("source_stac")
+    if isinstance(source_stac, str) and source_stac.strip():
+        href = source_stac.strip()
+        if "{version}" in href:
+            href = href.replace("{version}", version) if version else ""
+        if href:
+            collection.add_link(
+                pystac.Link(rel="canonical", target=href, media_type="application/json", title="Source STAC collection")
+            )
     for rel, name, title in (("describedby", "README.md", "README"), ("agents", "AGENTS.md", "Guide for agents")):
         collection.add_link(
             pystac.Link(

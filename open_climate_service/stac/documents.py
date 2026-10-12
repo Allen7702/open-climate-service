@@ -53,7 +53,7 @@ def catalog_agents(request: Request) -> str:
             "- A **vector** collection has a `data` asset: one GeoParquet 1.1 file with a `bbox` covering "
             "column, readable with DuckDB, GeoPandas or any Parquet reader. Its `AGENTS.md` link says how.",
             "",
-            "Every asset is served over HTTPS with range requests, so a reader fetches only what it needs.",
+            "Every asset is served with range requests, so a reader fetches only what it needs.",
             "",
         ]
     )
@@ -79,17 +79,18 @@ def collection_readme(dataset_id: str, request: Request) -> str:
     if isinstance(attribution, str) and attribution.strip():
         lines += ["", f"Attribution: {attribution.strip()}"]
     lines += ["", "## Provenance", ""]
-    for provider in services._build_providers(template):
+    # The providers the STAC document publishes, this instance last as the one host, so the two
+    # documents agree.
+    for provider in services._feature_providers(template, request):
         name = f"[{provider['name']}]({provider['url']})" if provider.get("url") else provider["name"]
         roles = f" ({', '.join(provider['roles'])})" if provider.get("roles") else ""
-        lines.append(f"- Provided by {name}{roles}.")
+        lines.append(f"- {name}{roles}")
     source_url = template.get("source_url")
     if isinstance(source_url, str) and source_url.strip():
         lines.append(f"- Source: {source_url.strip()}")
     if artifact.version is not None:
         lines.append(f"- Version: {artifact.version.value} ({artifact.version.authority})")
     lines.append(f"- Last refreshed: {artifact.created_at.isoformat()}")
-    lines.append(f"- Hosted by {_instance_name()} at {absolute_url(request, '/')}.")
     detail = artifact.features
     if detail is not None:
         types = ", ".join(store.stored_geometry_types(artifact)) or "unknown"
@@ -110,7 +111,11 @@ def collection_agents(dataset_id: str, request: Request) -> str:
     detail = artifact.features
     id_property = detail.id_property if detail is not None else "id"
     geometry = detail.primary_geometry if detail is not None else "geometry"
+    crs = detail.crs if detail is not None else "EPSG:4326"
+    # The covering bbox is in the stored CRS, which a collection can set to a projected one.
+    units = "longitude and latitude" if crs == "EPSG:4326" else f"{crs} coordinates"
     data = absolute_url(request, f"/features/{path_segment(dataset_id)}/data.parquet")
+    url_literal = data.replace("'", "''")
     return "\n".join(
         [
             f"# Reading {artifact.dataset_name}",
@@ -120,15 +125,16 @@ def collection_agents(dataset_id: str, request: Request) -> str:
             f"- One row per feature, identified by `{id_property}`; the geometry is in `{geometry}`.",
             "- A `bbox` covering column holds each feature's bounds, for filtering by area.",
             "",
-            "With DuckDB, reading only one area (replace the four bounds, in longitude and latitude):",
+            f"With DuckDB, reading only one area (replace the four bounds, in {units}):",
             "",
             "```sql",
             "INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs;",
-            f"SELECT {id_property}, ST_AsText({geometry}) FROM '{data}'",
+            f"SELECT {_sql_identifier(id_property)}, ST_AsText({_sql_identifier(geometry)}) FROM '{url_literal}'",
             "WHERE bbox.xmin < <east> AND bbox.xmax > <west> AND bbox.ymin < <north> AND bbox.ymax > <south>;",
             "```",
             "",
-            "With GeoPandas: `geopandas.read_parquet(path, bbox=(west, south, east, north))` on a downloaded copy.",
+            f"With GeoPandas: `geopandas.read_parquet(path, bbox=(west, south, east, north))` on a downloaded "
+            f"copy, with the bounds in {units}.",
             "",
             f"The licence, providers and extent are in the STAC collection: "
             f"{absolute_url(request, f'/stac/collections/{path_segment(dataset_id)}')}",
@@ -143,6 +149,11 @@ def _feature_collection(dataset_id: str) -> tuple[ArtifactRecord, dict[str, Any]
     if artifact is None or artifact.format != ArtifactFormat.GEOPARQUET:
         raise HTTPException(status_code=404, detail=f"STAC collection '{dataset_id}' has no README")
     return artifact, feature_templates.get_feature_template(artifact.dataset_id) or {}
+
+
+def _sql_identifier(name: str) -> str:
+    """A column name quoted for SQL, so spaces, punctuation or a reserved word stay one name."""
+    return '"' + name.replace('"', '""') + '"'
 
 
 def _instance_name() -> str:

@@ -31,9 +31,9 @@
     - name: Overture Maps
       url: https://overturemaps.org
       roles: [producer, licensor]
-  # The extract mirrors Overture: its page, and its own STAC catalog of releases.
+  # The extract mirrors Overture: its page, and its own STAC collection for the release read.
   source_url: https://docs.overturemaps.org/guides/divisions/
-  source_stac: https://stac.overturemaps.org/catalog.json
+  source_stac: https://stac.overturemaps.org/{version}/divisions/division_area/collection.json
   id_property: id
   provider: overture
   params:
