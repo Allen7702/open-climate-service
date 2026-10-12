@@ -36,8 +36,10 @@ Operational note:
 - `GET /stac`
 - `GET /stac/catalog.json`
 - `GET /stac/collections/{dataset_id}`
-- `GET /stac/README.md` and `GET /stac/AGENTS.md`
-- `GET /stac/collections/{dataset_id}/README.md` and `.../AGENTS.md`
+- `GET /stac/README.md`
+- `GET /stac/AGENTS.md`
+- `GET /stac/collections/{dataset_id}/README.md`
+- `GET /stac/collections/{dataset_id}/AGENTS.md`
 - `GET /zarr/{dataset_id}`
 - `GET /zarr/{dataset_id}/{relative_path}`
 - `GET /icechunk/{dataset_id}/{path}`
