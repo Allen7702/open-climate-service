@@ -208,6 +208,26 @@ def test_a_superseded_file_takes_its_archive_with_it(monkeypatch: pytest.MonkeyP
     assert tiles.archive_path(current).is_file()
 
 
+def test_an_archive_that_cannot_be_removed_is_tried_again_later(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The archive goes before its Parquet file, so a failure leaves the version discoverable."""
+    monkeypatch.setattr(store, "SUPERSEDED_FILE_GRACE_SECONDS", 0)
+    first = Path(str(_refresh().path))
+    archive = tiles.archive_path(first)
+    _refresh()  # marks the first file superseded
+    archive.unlink()
+    archive.mkdir()  # an archive that cannot be unlinked
+    (archive / "held").touch()
+
+    _refresh()  # tries to remove the first version, and fails on its archive
+
+    assert first.exists() and archive.exists()
+    (archive / "held").unlink()
+    archive.rmdir()
+    archive.touch()
+    _refresh()  # the next prune finds the first version again and removes both
+    assert not first.exists() and not archive.exists()
+
+
 def test_the_viewer_draws_with_the_collections_style(client: TestClient) -> None:
     page = client.get("/map").text
 

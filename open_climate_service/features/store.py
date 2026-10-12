@@ -204,9 +204,11 @@ def prune_superseded_files(dataset_id: str, *, keep: Path | None) -> None:
         if marker_age < SUPERSEDED_FILE_GRACE_SECONDS:
             continue
         try:
-            stale.unlink()
             # Its vector tiles go with it: an archive is only ever for the file it was built from.
+            # The archive first, so that if it cannot be removed, the Parquet file is still here
+            # for the next prune to find, and both are tried again.
             tiles.archive_path(stale).unlink(missing_ok=True)
+            stale.unlink()
             marker.unlink(missing_ok=True)
         except OSError:
             logger.warning("Could not remove the superseded feature collection file '%s'", stale, exc_info=True)
