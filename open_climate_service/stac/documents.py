@@ -22,9 +22,9 @@ from open_climate_service.stac import services
 def catalog_readme(request: Request) -> str:
     """What the catalog holds: every published collection, with the licence each declares."""
     lines = [
-        f"# {services.CATALOG_TITLE}",
+        f"# {_instance_name()}",
         "",
-        f"The published datasets of {_instance_name()}, at {absolute_url(request, '/')}: rasters as "
+        f"The published datasets of this instance, at {absolute_url(request, '/')}: rasters as "
         "GeoZarr stores and vector datasets as GeoParquet.",
         "",
         "Each collection declares its own licence in its STAC document, and its providers where they are known.",
@@ -44,7 +44,7 @@ def catalog_agents(request: Request) -> str:
     catalog = absolute_url(request, "/stac/catalog.json")
     return "\n".join(
         [
-            f"# Reading the {services.CATALOG_TITLE} catalog",
+            f"# Reading the {_instance_name()} catalog",
             "",
             f"Start at {catalog}. Each `child` link is one collection.",
             "",

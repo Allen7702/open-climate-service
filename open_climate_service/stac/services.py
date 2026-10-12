@@ -38,8 +38,7 @@ from open_climate_service.shared.time import (
 from open_climate_service.shared.urls import absolute_url, path_segment, self_url
 from open_climate_service.stac.media_types import ZARR_V3_MEDIA_TYPE, data_group_open_kwargs, zarr_media_type
 
-CATALOG_TITLE = "Open Climate Service"
-CATALOG_DESCRIPTION = "Published Open Climate Service GeoZarr datasets"
+CATALOG_DESCRIPTION = "Published datasets: rasters as GeoZarr stores and vector datasets as GeoParquet"
 STAC_VERSION = "1.1.0"
 MARKDOWN_MEDIA_TYPE = "text/markdown"
 CF_EXTENSION = "https://stac-extensions.github.io/cf/v1.0.0/schema.json"
@@ -92,6 +91,12 @@ _zarr_media_type_cache: dict[str, str] = {}
 _V = TypeVar("_V")
 
 
+def _get_catalog_title() -> str:
+    from open_climate_service import config as api_config
+
+    return api_config.get_name()
+
+
 def _get_catalog_id() -> str:
     from open_climate_service import config as api_config
 
@@ -121,7 +126,8 @@ def build_catalog(request: Request) -> dict[str, object]:
         "stac_version": STAC_VERSION,
         "type": "Catalog",
         "id": _get_catalog_id(),
-        "title": CATALOG_TITLE,
+        # The instance's own name, as in the web interface; "Open Climate Service" when unset.
+        "title": _get_catalog_title(),
         "description": CATALOG_DESCRIPTION,
         "links": links,
     }

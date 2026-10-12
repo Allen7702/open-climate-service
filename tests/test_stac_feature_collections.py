@@ -405,6 +405,11 @@ def test_the_catalog_and_a_feature_collection_link_a_readme_and_agents_guide(
     assert "http://testserver/features/districts/data.parquet" in agents and "`orgUnitCode`" in agents
     catalog = client.get("/stac/README.md").text
     assert "[District boundaries](http://testserver/stac/collections/districts) (vector)" in catalog
+    # Headed by the instance's own name, not the product's.
+    monkeypatch.setattr("open_climate_service.config.get_name", lambda: "Malawi Climate Service")
+    assert client.get("/stac/README.md").text.startswith("# Malawi Climate Service\n")
+    assert client.get("/stac/AGENTS.md").text.startswith("# Reading the Malawi Climate Service catalog\n")
+    assert client.get("/stac/catalog.json").json()["title"] == "Malawi Climate Service"
 
 
 def test_the_readme_lists_the_same_providers_as_the_stac_with_one_host(

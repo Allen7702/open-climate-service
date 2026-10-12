@@ -8,7 +8,7 @@ The current public story is:
 - discover the configured extent with `/extent`
 - discover managed datasets with `/datasets`
 - discover vector feature collections with `/features`
-- discover published GeoZarr datasets with `/stac/catalog.json`
+- discover published datasets, rasters and vector datasets, with `/stac/catalog.json`
 - access raw Zarr data with `/zarr/{dataset_id}` (vanilla zarr clients, web maps)
 - access the native Icechunk store with `/icechunk/{dataset_id}` (Icechunk SDK)
 - preview a dataset with `/datasets/{dataset_id}/thumbnail.png` (also a STAC collection asset)
