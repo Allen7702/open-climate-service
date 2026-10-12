@@ -27,7 +27,7 @@ def catalog_readme(request: Request) -> str:
         f"The published datasets of {_instance_name()}, at {absolute_url(request, '/')}: rasters as "
         "GeoZarr stores and vector datasets as GeoParquet.",
         "",
-        "Each collection declares its own licence and providers in its STAC document.",
+        "Each collection declares its own licence in its STAC document, and its providers where they are known.",
         "",
         "## Collections",
         "",
@@ -48,8 +48,9 @@ def catalog_agents(request: Request) -> str:
             "",
             f"Start at {catalog}. Each `child` link is one collection.",
             "",
-            "- A **raster** collection has a `zarr` asset: a Zarr v3 store with GeoZarr metadata, "
-            "readable with xarray (`xr.open_zarr(href)`).",
+            "- A **raster** collection has a `zarr` asset: a Zarr v3 store with GeoZarr metadata. Open it "
+            "with the asset's own `xarray:open_kwargs`, which name the full-resolution group of a "
+            'multiscale store: `xr.open_zarr(asset["href"], **asset["xarray:open_kwargs"])`.',
             "- A **vector** collection has a `data` asset: one GeoParquet 1.1 file with a `bbox` covering "
             "column, readable with DuckDB, GeoPandas or any Parquet reader. Its `AGENTS.md` link says how.",
             "",
@@ -147,7 +148,7 @@ def _feature_collection(dataset_id: str) -> tuple[ArtifactRecord, dict[str, Any]
     """The published feature collection's record and template, or 404 as the STAC route does."""
     artifact = services._eligible_artifacts_by_dataset().get(dataset_id)
     if artifact is None or artifact.format != ArtifactFormat.GEOPARQUET:
-        raise HTTPException(status_code=404, detail=f"STAC collection '{dataset_id}' has no README")
+        raise HTTPException(status_code=404, detail=f"No published feature collection '{dataset_id}'")
     return artifact, feature_templates.get_feature_template(artifact.dataset_id) or {}
 
 

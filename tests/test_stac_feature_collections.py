@@ -442,8 +442,17 @@ def test_the_agents_query_quotes_column_names_and_names_the_stored_crs(
 
 
 def test_a_raster_or_unknown_collection_has_no_readme(client: TestClient) -> None:
-    assert client.get("/stac/collections/nothing_here/README.md").status_code == 404
-    assert client.get("/stac/collections/nothing_here/AGENTS.md").status_code == 404
+    for name in ("README.md", "AGENTS.md"):
+        response = client.get(f"/stac/collections/nothing_here/{name}")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "No published feature collection 'nothing_here'"
+
+
+def test_the_catalog_guide_opens_a_raster_with_its_assets_open_kwargs(client: TestClient) -> None:
+    """A multiscale store's root has no data variables; the asset's kwargs name the level to open."""
+    agents = client.get("/stac/AGENTS.md").text
+
+    assert 'xr.open_zarr(asset["href"], **asset["xarray:open_kwargs"])' in agents
 
 
 # --- the GeoParquet asset --------------------------------------------------------------------
