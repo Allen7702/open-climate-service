@@ -21,6 +21,7 @@ from open_climate_service.data_accessor.services.accessor import open_icechunk_d
 from open_climate_service.data_manager.services.utils import get_time_dim, get_x_y_dims
 from open_climate_service.data_registry.services import datasets as registry_datasets
 from open_climate_service.features import templates as feature_templates
+from open_climate_service.features import tiles
 from open_climate_service.ingestions import services as ingestion_services
 from open_climate_service.ingestions.schemas import ArtifactFormat, ArtifactRecord, FeatureDetail
 from open_climate_service.shared import geoparquet
@@ -328,6 +329,17 @@ def _build_feature_collection(dataset_id: str, artifact: ArtifactRecord, request
             roles=["data"],
         ),
     )
+    # Vector tiles for display, when the refresh built them; the viewer draws from these.
+    if artifact.path and tiles.archive_path(Path(str(artifact.path))).is_file():
+        collection.add_asset(
+            "tiles",
+            pystac.Asset(
+                href=absolute_url(request, f"/features/{path_segment(dataset_id)}/data.pmtiles"),
+                media_type=tiles.PMTILES_MEDIA_TYPE,
+                title="Vector tiles (PMTiles)",
+                roles=["visual"],
+            ),
+        )
     # As for a raster collection: only when the file is there, so a client never follows a
     # thumbnail href to a 404.
     if thumbnail_path(dataset_id).is_file():

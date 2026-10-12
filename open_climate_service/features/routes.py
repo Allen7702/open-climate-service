@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from open_climate_service.features import services
 from open_climate_service.features.schemas import FeatureCollectionListResponse, FeatureCollectionRecord
+from open_climate_service.features.tiles import PMTILES_MEDIA_TYPE
 from open_climate_service.ingestions.job_submission import INGESTION_JOB_HREF_BASE
 from open_climate_service.shared.geoparquet import PARQUET_MEDIA_TYPE
 
@@ -81,3 +82,15 @@ def download_feature_collection(collection_id: str) -> FileResponse:
     """
     path = services.published_collection_file_or_404(collection_id)
     return FileResponse(path, media_type=PARQUET_MEDIA_TYPE, filename=f"{collection_id}.parquet")
+
+
+@router.get("/{collection_id}/data.pmtiles", response_class=FileResponse)
+def download_feature_tiles(collection_id: str) -> FileResponse:
+    """Serve the PMTiles archive the map viewer draws a published collection from.
+
+    Range requests are answered by `FileResponse`, which is all a PMTiles reader needs: it
+    fetches the header and the tiles in view, never the whole archive. Advertised as the
+    collection's `tiles` STAC asset whenever it exists.
+    """
+    path = services.published_collection_tiles_or_404(collection_id)
+    return FileResponse(path, media_type=PMTILES_MEDIA_TYPE, filename=f"{collection_id}.pmtiles")

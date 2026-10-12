@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from open_climate_service import config as api_config
+from open_climate_service.features import tiles
 from open_climate_service.ingestions.schemas import ArtifactRecord
 from open_climate_service.shared import geoparquet
 from open_climate_service.shared.crs import canonical_crs_code, transform_bbox
@@ -204,6 +205,8 @@ def prune_superseded_files(dataset_id: str, *, keep: Path | None) -> None:
             continue
         try:
             stale.unlink()
+            # Its vector tiles go with it: an archive is only ever for the file it was built from.
+            tiles.archive_path(stale).unlink(missing_ok=True)
             marker.unlink(missing_ok=True)
         except OSError:
             logger.warning("Could not remove the superseded feature collection file '%s'", stale, exc_info=True)

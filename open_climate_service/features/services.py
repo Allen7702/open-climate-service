@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from open_climate_service import config as api_config
 from open_climate_service.features import providers as feature_providers
-from open_climate_service.features import store
+from open_climate_service.features import store, tiles
 from open_climate_service.features import templates as feature_templates
 from open_climate_service.features.schemas import FeatureCollectionListResponse, FeatureCollectionRecord
 from open_climate_service.ingestions import services as ingestion_services
@@ -164,6 +164,7 @@ def _refresh_feature_collection_locked(
     # superseded go. A failure here leaves an orphan, not a wrong answer.
     store.prune_superseded_files(dataset_id, keep=written)
     # Last, and never raising: a collection that cannot be drawn is still registered.
+    tiles.build_archive(written, dataset_id, store_crs)
     write_feature_thumbnail(written, dataset_id)
     return record
 
@@ -532,6 +533,19 @@ def published_collection_file_or_404(collection_id: str) -> Path:
         raise HTTPException(
             status_code=404, detail=f"Feature collection '{collection_id}' is registered but its file is missing"
         )
+    return path
+
+
+def published_collection_tiles_or_404(collection_id: str) -> Path:
+    """Return the PMTiles archive of a published collection's current file, or raise 404.
+
+    Resolved through the same record as its GeoParquet, so the tiles always draw the version
+    the catalogue advertises. A collection with no archive (a failed build, or one stored
+    before tiles existed) is a 404, which the viewer answers by reading the GeoParquet.
+    """
+    path = tiles.archive_path(published_collection_file_or_404(collection_id))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Feature collection '{collection_id}' has no vector tiles")
     return path
 
 

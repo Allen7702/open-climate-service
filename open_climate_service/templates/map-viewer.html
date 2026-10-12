@@ -285,6 +285,10 @@
       // (CLIM-1234). hyparquet is plain JavaScript with no dependencies, about 20 KB gzipped,
       // and decodes GeoParquet geometry to GeoJSON itself, which MapLibre draws as it is.
       import { parquetReadObjects } from "https://esm.sh/hyparquet@1.31.2";
+      // A vector dataset with a PMTiles archive (CLIM-1177) is drawn from it: MapLibre reads
+      // the tiles in view with range requests, through the `pmtiles://` protocol.
+      import { Protocol as PMTilesProtocol } from "https://esm.sh/pmtiles@4.5.0";
+      maplibregl.addProtocol("pmtiles", new PMTilesProtocol().tile);
 
       // Suffix _r means the scale is reversed (matplotlib convention).
       // chroma-js resolves ColorBrewer/D3 scale names case-insensitively.
@@ -649,7 +653,7 @@
         }
 
         const featureAsset = collection.assets?.data;
-        if (featureAsset?.type === "application/x-parquet") {
+        if (featureAsset?.type === "application/x-parquet" || collection.assets?.tiles) {
           await loadFeatures(collection, featureAsset, superseded);
           return;
         }
@@ -803,9 +807,12 @@
         }
       }
 
-      // A vector dataset: one GeoJSON source and a fill, outline and point layer over it. The
-      // ids are fixed, so taking them down is one place and a second dataset never collides.
+      // A vector dataset: one source, its tiles or GeoJSON, and a fill, outline and point layer
+      // over it. The ids are fixed, so taking them down is one place and a second dataset never
+      // collides.
       const FEATURE_SOURCE = "features";
+      // The layer name inside every collection's archive (features/tiles.py, TILE_LAYER).
+      const TILE_LAYER = "features";
       const FEATURE_LAYERS = ["features-fill", "features-line", "features-point"];
       // Both spellings: MapLibre reports a multi-part feature as `MultiPolygon` and so on.
       const AREA_TYPES = ["Polygon", "MultiPolygon"];
@@ -840,18 +847,13 @@
       // The largest GeoParquet file the viewer reads. The file is read and decoded whole in the
       // browser, which holds several times its size while it does, so a large collection would
       // stall the tab. About twice the largest boundary set in use (Norway's municipalities,
-      // 11.6 MB); a bigger collection needs vector tiles (CLIM-1177) or a filtered read.
+      // 11.6 MB). Only a collection without vector tiles is read this way.
       const MAX_FEATURE_BYTES = 25 * 1024 * 1024;
 
-      // The stored GeoParquet, read whole. Drawn only when it is in WGS 84, the default for a
-      // collection, since MapLibre places GeoJSON coordinates as longitude and latitude.
+      // Drawn from the collection's vector tiles when it has them, which every refresh builds.
+      // Otherwise from the stored GeoParquet, read whole: a collection stored before tiles, or
+      // one whose tile build failed.
       async function loadFeatures(collection, asset, superseded) {
-        const storedCrs = collection["proj:code"] ?? "EPSG:4326";
-        if (storedCrs !== "EPSG:4326") {
-          setStatus(`This vector dataset is stored in ${storedCrs}; the map viewer draws WGS 84 only.`, true);
-          return;
-        }
-
         // The collection's attribution is on its feature record, not in STAC. An open licence
         // such as ODbL requires it wherever the data is shown, so it goes on the map. The
         // source row names the template's providers, as it does for a raster.
@@ -859,82 +861,42 @@
           .then((res) => (res.ok ? res.json() : null))
           .catch(() => null);
 
-        let geojson;
-        try {
-          const download = new AbortController();
-          const res = await fetch(asset.href, { signal: download.signal });
-          if (superseded()) return;
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          // The size is known from the headers, before the body is read, so a file over the
-          // limit is never downloaded.
-          const size = Number(res.headers.get("Content-Length"));
-          if (size > MAX_FEATURE_BYTES) {
-            download.abort();
-            const megabytes = (bytes) => Math.round(bytes / (1024 * 1024));
-            setStatus(
-              `This vector dataset is ${megabytes(size)} MB, more than the ${megabytes(MAX_FEATURE_BYTES)} MB ` +
-                "the map viewer reads. ",
-              true,
-            );
-            const link = document.createElement("a");
-            link.href = asset.href;
-            link.download = "";
-            link.textContent = "Download it to open in a GIS application.";
-            statusEl.append(link);
-            return;
-          }
-          const buffer = await res.arrayBuffer();
-          if (superseded()) return;
-          const rows = await parquetReadObjects({ file: buffer });
-          if (superseded()) return;
-          const geometryColumn = collection["table:primary_geometry"] ?? "geometry";
-          geojson = {
-            type: "FeatureCollection",
-            features: rows
-              .filter((row) => row[geometryColumn])
-              .map((row) => {
-                const properties = {};
-                for (const [key, value] of Object.entries(row)) {
-                  if (key !== geometryColumn && key !== "bbox") properties[key] = plainValue(value);
-                }
-                return { type: "Feature", geometry: row[geometryColumn], properties };
-              }),
-          };
-        } catch (err) {
-          if (superseded()) return;
-          setStatus(`Failed to load features: ${err.message}`, true);
-          return;
-        }
+        const tiles = collection.assets?.tiles;
+        const source = tiles?.href
+          ? { type: "vector", url: `pmtiles://${new URL(tiles.href, location.href)}` }
+          : await readGeoParquet(collection, asset, superseded);
+        if (!source || superseded()) return;
 
         const record = await recordRequest;
         if (superseded()) return;
         const providers = (collection.providers ?? []).map((p) => p.name).filter(Boolean);
         const attribution = record?.attribution ?? (providers.join(", ") || null);
+        // A tiled source names the layer inside its archive; a GeoJSON source has none.
+        const layerSource =
+          source.type === "vector"
+            ? { source: FEATURE_SOURCE, "source-layer": TILE_LAYER }
+            : { source: FEATURE_SOURCE };
 
         try {
-          map.addSource(FEATURE_SOURCE, {
-            type: "geojson",
-            data: geojson,
-            ...(attribution && { attribution }),
-          });
+          map.addSource(FEATURE_SOURCE, { ...source, ...(attribution && { attribution }) });
           map.addLayer({
             id: "features-fill",
             type: "fill",
-            source: FEATURE_SOURCE,
+            ...layerSource,
             filter: ["in", ["geometry-type"], ["literal", AREA_TYPES]],
             paint: { "fill-color": "#0066cc", "fill-opacity": 0.15 },
           });
           map.addLayer({
             id: "features-line",
             type: "line",
-            source: FEATURE_SOURCE,
+            ...layerSource,
             filter: ["in", ["geometry-type"], ["literal", [...AREA_TYPES, ...LINE_TYPES]]],
             paint: { "line-color": "#1e3a5f", "line-width": 1 },
           });
           map.addLayer({
             id: "features-point",
             type: "circle",
-            source: FEATURE_SOURCE,
+            ...layerSource,
             filter: ["in", ["geometry-type"], ["literal", POINT_TYPES]],
             paint: {
               "circle-radius": 4,
@@ -959,8 +921,68 @@
         metaDescription.textContent = description;
         metaDescription.classList.toggle("hidden", !description);
 
-        const count = geojson.features.length;
-        setStatus(`${count} feature${count === 1 ? "" : "s"}. Click one to see its name.`);
+        const count = source.data?.features.length ?? record?.feature_count;
+        const counted = count == null ? "" : `${count} feature${count === 1 ? "" : "s"}. `;
+        setStatus(`${counted}Click one to see its name.`);
+      }
+
+      // The stored GeoParquet as a GeoJSON source, or null with the reason in the status line.
+      // Drawn only when it is in WGS 84, the default for a collection, since MapLibre places
+      // GeoJSON coordinates as longitude and latitude.
+      async function readGeoParquet(collection, asset, superseded) {
+        const storedCrs = collection["proj:code"] ?? "EPSG:4326";
+        if (storedCrs !== "EPSG:4326") {
+          setStatus(`This vector dataset is stored in ${storedCrs}; the map viewer draws WGS 84 only.`, true);
+          return null;
+        }
+
+        let geojson;
+        try {
+          const download = new AbortController();
+          const res = await fetch(asset.href, { signal: download.signal });
+          if (superseded()) return null;
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          // The size is known from the headers, before the body is read, so a file over the
+          // limit is never downloaded.
+          const size = Number(res.headers.get("Content-Length"));
+          if (size > MAX_FEATURE_BYTES) {
+            download.abort();
+            const megabytes = (bytes) => Math.round(bytes / (1024 * 1024));
+            setStatus(
+              `This vector dataset is ${megabytes(size)} MB, more than the ${megabytes(MAX_FEATURE_BYTES)} MB ` +
+                "the map viewer reads. ",
+              true,
+            );
+            const link = document.createElement("a");
+            link.href = asset.href;
+            link.download = "";
+            link.textContent = "Download it to open in a GIS application.";
+            statusEl.append(link);
+            return null;
+          }
+          const buffer = await res.arrayBuffer();
+          if (superseded()) return null;
+          const rows = await parquetReadObjects({ file: buffer });
+          if (superseded()) return null;
+          const geometryColumn = collection["table:primary_geometry"] ?? "geometry";
+          geojson = {
+            type: "FeatureCollection",
+            features: rows
+              .filter((row) => row[geometryColumn])
+              .map((row) => {
+                const properties = {};
+                for (const [key, value] of Object.entries(row)) {
+                  if (key !== geometryColumn && key !== "bbox") properties[key] = plainValue(value);
+                }
+                return { type: "Feature", geometry: row[geometryColumn], properties };
+              }),
+          };
+        } catch (err) {
+          if (superseded()) return null;
+          setStatus(`Failed to load features: ${err.message}`, true);
+          return null;
+        }
+        return { type: "geojson", data: geojson };
       }
 
       // Without a close button, a click elsewhere on the map (MapLibre's default) or Escape closes it.

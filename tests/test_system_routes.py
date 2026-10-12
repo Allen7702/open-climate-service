@@ -387,7 +387,7 @@ def test_the_map_viewer_lists_vector_datasets_and_reads_their_geoparquet(client:
     assert 'if (storedCrs !== "EPSG:4326")' in body
     # The source names the providers, the attribution goes on the map; vectors have no units.
     assert "fetch(`/features/${encodeURIComponent(collection.id)}`)" in body
-    assert "...(attribution && { attribution })," in body
+    assert "map.addSource(FEATURE_SOURCE, { ...source, ...(attribution && { attribution }) });" in body
     assert 'metaSource.textContent = providers.join(", ") || "—";' in body
     assert "showUnits(null);" in body
     assert 'map.on("click", id, showFeatureName);' in body
