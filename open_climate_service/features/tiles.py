@@ -6,7 +6,7 @@ so a browser zoomed out over a country fetches a few small tiles instead of ever
 
 The archive is derived output, for display only. Aggregation reads the exact geometry in the
 GeoParquet, and a refresh can always rebuild the archive from it. So a failed build is logged
-and never fails the refresh: the viewer then reads the GeoParquet, as it did before tiles.
+and never fails the refresh; the next refresh builds it again.
 """
 
 from __future__ import annotations
@@ -48,8 +48,7 @@ def archive_path(collection_path: Path) -> Path:
 def build_archive(collection_path: Path, collection_id: str, crs: str) -> Path | None:
     """Build the PMTiles archive for one stored collection file, returning it, or None.
 
-    **Never raises.** A collection that cannot be tiled is still registered, and the viewer
-    falls back to its GeoParquet.
+    **Never raises.** A collection that cannot be tiled is still registered.
 
     Written beside the target and moved into place, so the route never serves a partial
     archive. tylertoo reads WGS 84 or Web Mercator; a collection stored in another CRS is

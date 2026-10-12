@@ -118,7 +118,7 @@ def test_a_failed_tile_build_does_not_fail_the_refresh(
     assert Path(str(record.path)).is_file()
     assert not tiles.archive_path(Path(str(record.path))).exists()
     assert not [p for p in _isolated.iterdir() if p.name.endswith(".writing")]
-    # Nothing advertises or serves an archive that is not there; the viewer reads the GeoParquet.
+    # Nothing advertises or serves an archive that is not there.
     assert client.get("/features/districts/data.pmtiles").status_code == 404
     assets = client.get("/stac/collections/districts").json()["assets"]
     assert "tiles" not in assets and "data" in assets

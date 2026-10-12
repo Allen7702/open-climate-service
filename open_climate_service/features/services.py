@@ -541,7 +541,7 @@ def published_collection_tiles_or_404(collection_id: str) -> Path:
 
     Resolved through the same record as its GeoParquet, so the tiles always draw the version
     the catalogue advertises. A collection with no archive (a failed build, or one stored
-    before tiles existed) is a 404, which the viewer answers by reading the GeoParquet.
+    before tiles existed) is a 404 until a refresh builds it.
     """
     path = tiles.archive_path(published_collection_file_or_404(collection_id))
     if not path.is_file():

@@ -544,9 +544,9 @@ directory is not reachable through it.
 
 `GET /features/{collection_id}/data.pmtiles` serves the collection's vector tiles, a PMTiles
 archive the map viewer draws from, with range requests. Every refresh builds it from the stored
-GeoParquet with [tylertoo](https://github.com/geoparquet-io/tylertoo), simplified per zoom, so it
-is for display only: aggregation reads the GeoParquet. A failed build is logged and does not fail
-the refresh; the route then answers 404 and the STAC collection has no `tiles` asset.
+GeoParquet, simplified per zoom, so it is for display only: aggregation reads the GeoParquet. A
+failed build is logged and does not fail the refresh; the route then answers 404 and the STAC
+collection has no `tiles` asset.
 
 ## 12. `/sync`
 

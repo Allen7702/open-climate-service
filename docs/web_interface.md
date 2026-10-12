@@ -171,8 +171,7 @@ GeoZarr stores, vector datasets from vector tiles. Only published datasets appea
   vector datasets when the instance has both.
 - **Vector datasets** — drawn as filled areas, lines or points, with the feature's name shown
   on click. The viewer reads the collection's vector tiles (`/features/{id}/data.pmtiles`),
-  fetching only the tiles in view. A collection without tiles is read whole from its stored
-  file (`/features/{id}/data.parquet`), which then has to be in WGS 84 and at most 25 MB.
+  fetching only the tiles in view.
 - **Dimension controls** — the viewer builds one control per non-spatial dimension of the
   dataset, choosing the type from the dimension's metadata: a **slider** for a continuous,
   evenly-spaced axis (time, or a regular ordinal axis like day-of-year) and a **dropdown**
