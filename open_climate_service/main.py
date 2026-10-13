@@ -158,6 +158,9 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             logger.exception("Pipeline dispatch for dataset updates failed")
 
     job_service.set_event_consumer(_consume)
+    # An openEO job that publishes a managed dataset owns its update event; it reaches the
+    # same consumers when the job finishes, and startup replay reads it from the job store.
+    openeo_service.set_event_consumer(_consume)
     # Registered before openEO jobs are recovered: a re-enqueued triggered job records the
     # delivery it owes as it finishes, which it cannot do before these are in place. A job
     # finishing during reconciliation is caught by one or the other; the deterministic
@@ -171,6 +174,11 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     openeo_service.set_finished_listener(_job_finished)
     openeo_service.recover_pending_jobs()
+    try:
+        # A job whose last attempt failed after its commit still owes that publication's event.
+        openeo_service.reconcile_publications()
+    except Exception:
+        logger.exception("openEO publication reconciliation failed; continuing startup")
     try:
         automation_service.reconcile_deliveries()
     except Exception:
@@ -195,6 +203,7 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         if pipeline_recovery is not None:
             pipeline_recovery.cancel()
         job_service.set_event_consumer(None)
+        openeo_service.set_event_consumer(None)
         # The listener goes first: a delivery a job records from here on is reconciled at the
         # next start. The delivery provider is deliberately left in place. The executor does
         # not wait for running jobs, so one can still finish after this; clearing the provider

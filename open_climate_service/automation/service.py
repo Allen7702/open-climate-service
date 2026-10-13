@@ -18,7 +18,7 @@ from open_climate_service.automation.config import (
     WorkflowTrigger,
     get_automation_config,
 )
-from open_climate_service.jobs import store as job_store
+from open_climate_service.jobs.events import persisted_events
 from open_climate_service.jobs.models import DATASET_UPDATED_EVENT_TYPE, JobEvent
 from open_climate_service.openeo import workflows
 from open_climate_service.openeo.jobs import (
@@ -538,22 +538,25 @@ class WorkflowAutomationService:
             _save_activations(activations)
 
     def replay(self) -> None:
-        """Consume persisted events, honouring each trigger's activation boundary."""
+        """Consume persisted events, honouring each trigger's activation boundary.
+
+        Reads the shared event log, so an update owned by an openEO job (a managed dataset it
+        published) is replayed exactly like one owned by an ingestion or a sync.
+        """
         config = self._config or self._config_loader()
         if api_config.is_read_only() or not config.workflow_triggers:
             return
         service = self._openeo_service or get_openeo_job_service()
         activations = _load_activations()
-        for record in job_store.list_job_records():
-            for event in record.events:
-                if event.type != DATASET_UPDATED_EVENT_TYPE:
+        for event in persisted_events():
+            if event.type != DATASET_UPDATED_EVENT_TYPE:
+                continue
+            for trigger in config.workflow_triggers:
+                if trigger.on_update_of != event.data.get("dataset_id"):
                     continue
-                for trigger in config.workflow_triggers:
-                    if trigger.on_update_of != event.data.get("dataset_id"):
-                        continue
-                    if not trigger.replay_existing and _is_before_activation(event, activations.get(trigger.id)):
-                        continue
-                    self._submit_safely(trigger, event, service)
+                if not trigger.replay_existing and _is_before_activation(event, activations.get(trigger.id)):
+                    continue
+                self._submit_safely(trigger, event, service)
 
     def consume(self, events: list[JobEvent]) -> None:
         """Submit workflows for newly persisted successful-job events."""

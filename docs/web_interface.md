@@ -291,9 +291,11 @@ for work recorded inline rather than through a queued job. An update can be miss
 moment exceeds 15 minutes, or if instances sharing a data directory disagree on the time by more
 than that; such an update, when it arrives, is listed as arriving after the checkpoint rather than
 lost silently. Exactly once is therefore not unconditional: at most once always holds, at least
-once holds within those limits. Updates are read from the native job store, which has no cursor,
-so the startup pass reads it once, as workflow automation does; the checkpoint makes each
-pipeline skip decided updates without further work.
+once holds within those limits. Updates are read from both job stores, the native one (ingestion
+and sync) and the openEO one (a published derived dataset), neither of which has a cursor, so the
+startup pass reads them once, as workflow automation does; the checkpoint makes each pipeline
+skip decided updates without further work. An openEO job's update needs no unfinished-job bound:
+its time is taken inside the store write that records it.
 
 **Pause** stops new automatic runs and holds deliveries: a job already running finishes and keeps
 its result, and the delivery it owes is held. An operator can still run and deliver a dry run

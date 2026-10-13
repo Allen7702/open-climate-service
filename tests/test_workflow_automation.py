@@ -218,9 +218,7 @@ def test_new_trigger_does_not_backfill_events_before_activation(monkeypatch: pyt
 
     activation = datetime(2026, 8, 19, tzinfo=UTC)
     old_event = _event().model_copy(update={"time": datetime(2026, 8, 18, tzinfo=UTC)})
-    monkeypatch.setattr(
-        "open_climate_service.automation.service.job_store.list_job_records", lambda: [_record_with(old_event)]
-    )
+    monkeypatch.setattr("open_climate_service.jobs.store.list_job_records", lambda: [_record_with(old_event)])
     monkeypatch.setattr(
         "open_climate_service.automation.service._load_activations",
         lambda: {"chap-after-chirps": activation.isoformat()},
@@ -248,9 +246,7 @@ def test_replay_existing_replays_events_before_activation(monkeypatch: pytest.Mo
 
     activation = datetime(2026, 8, 19, tzinfo=UTC)
     old_event = _event().model_copy(update={"time": datetime(2026, 8, 18, tzinfo=UTC)})
-    monkeypatch.setattr(
-        "open_climate_service.automation.service.job_store.list_job_records", lambda: [_record_with(old_event)]
-    )
+    monkeypatch.setattr("open_climate_service.jobs.store.list_job_records", lambda: [_record_with(old_event)])
     monkeypatch.setattr(
         "open_climate_service.automation.service._load_activations",
         lambda: {"chap-after-chirps": activation.isoformat()},
@@ -352,9 +348,7 @@ def test_missing_activation_skips_replay_for_default_triggers(monkeypatch: pytes
     openeo = MagicMock()
     openeo.create_triggered_job.return_value = (_openeo_record(), True)
     service = WorkflowAutomationService(config_loader=_config, openeo_service=openeo)
-    monkeypatch.setattr(
-        "open_climate_service.automation.service.job_store.list_job_records", lambda: [_record_with(_event())]
-    )
+    monkeypatch.setattr("open_climate_service.jobs.store.list_job_records", lambda: [_record_with(_event())])
     monkeypatch.setattr("open_climate_service.automation.service._load_activations", lambda: {})
     monkeypatch.setattr("open_climate_service.automation.service._save_activations", lambda _: None)
 

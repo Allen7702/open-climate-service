@@ -110,10 +110,9 @@ declaration at all. Or put `aggregate_temporal_period` in the graph that feeds t
 declare its reducer as `temporal_aggregation`. The built-in org-unit workflows do neither:
 given a dataset finer than the export's period, they are refused.
 
-A derived dataset is published by an openEO job, and openEO jobs record no `dataset.updated`
-event, so a trigger cannot yet listen for it the way it listens for a sync. Until a derivation
-step emits that event, an export from a derived dataset is run by hand or by a workflow that
-derives and exports in one graph.
+A derived dataset is published by an openEO job, and that job records a `dataset.updated`
+event when the publication succeeds, so a workflow trigger or a pipeline listens for it the
+way it listens for a sync. See [Updates from derived datasets](workflow_automation.md#updates-from-derived-datasets).
 
 The pairs currently supported by `aggregate_temporal_period`: hourly into daily, weekly,
 monthly and yearly; daily into weekly, monthly and yearly; dekadal into monthly and yearly;

@@ -93,8 +93,8 @@ A malformed reference or an id that no template declares fails at startup, like 
 
 ## Delivery behavior
 
-A workflow is considered only after a successful ingestion or sync has persisted a
-`dataset.updated` event. Failed, cancelled and no-op runs do not trigger workflows, and neither
+A workflow is considered only after a successful ingestion, sync or openEO publication has
+persisted a `dataset.updated` event. Failed, cancelled and no-op runs do not trigger workflows, and neither
 does re-ingesting a dataset that is already current. Ingestion and sync, whether queued,
 scheduled, run inline, or started from the admin pages, all use the same path. Work run inline
 is recorded as a completed job under `/ingestions/jobs`, because that record is what makes
@@ -105,6 +105,46 @@ the completed job, that update event cannot be recovered automatically.
 An ingestion job notes in its checkpoint that it is about to change stored data, before
 fetching anything. If OCS stops after the data is committed but before the job completes,
 the recovered job finds the data current and still emits the event it owed, exactly once.
+
+### Updates from derived datasets
+
+An openEO job whose graph ends in `save_result` as Zarr with a `dataset_id` publishes a managed
+dataset, and owns that publication and its `dataset.updated` event. Startup replay and the live
+consumers read events from the native and the openEO job stores alike, so a trigger or a
+pipeline on a derived dataset needs nothing special.
+
+- **Only a published output is announced.** The event is recorded once the Icechunk commit has
+  landed, the artifact is registered and its publication is settled, and it follows the stored
+  record: an artifact that was already published stays published, and is announced, even when
+  the job did not ask to publish. An unpublished output is stored and registered without one.
+- **It describes a full rewrite.** The managed writer replaces the whole store, so the event's
+  `action` is `full_rewrite`, `previous_end` is empty and `current_start`/`current_end` are the
+  committed dataset's coverage. It does not claim which periods changed.
+- **The producing job owns it, one event per commit.** The event carries `producer_type: openeo`,
+  `producer_job_id` and `output_snapshot_id`, and its id is derived from the job, the artifact
+  and the committed snapshot. Completing the same commit again, in a retry or at a restart, is
+  the same logical update; a deliberate re-run of the job commits a new snapshot and is a new
+  update, which triggers and pipelines act on again.
+- **The snapshot is provenance, not a version.** `output_snapshot_id` is the physical Icechunk
+  snapshot the job committed. The artifact records it under `provenance`, with the producing
+  job and the execution evidence (process digest and input artifacts, source datasets and input
+  snapshots); its logical `version` stays empty unless OCS releases the dataset.
+
+The job records its intent before writing, marks the publication `committing` at the
+cancellation gate just before the commit, and writes the outcome and event together after
+registration. A restart that finds it `committing` searches the store history above the
+attempt's starting snapshot for the commit message naming the job and attempt: found, it
+completes the publication with that snapshot; not found, nothing was published and the job runs
+again, whether a user or a trigger submitted it. A job that recorded its event but stopped
+before finishing is finished at restart and its event dispatched; one that finished but stopped
+before dispatching is found by startup replay. Cancellation before the gate publishes nothing;
+after it, and while a commit is unresolved, cancellation is refused.
+
+An ordinary error after the gate (registering the artifact, publishing it, recording the
+outcome) never loses a commit that landed. The failing attempt completes the publication if it
+can, and the job finishes. If it cannot, the publication stays `committing`: a retry completes
+it from the existing commit rather than computing and committing again, and a job whose final
+attempt failed is completed at the next start, with its one event, and marked finished.
 
 Each event and trigger pair produces a deterministic openEO job ID. OCS replays persisted events
 at startup, but an already created, queued, running, or completed job is not duplicated. If OCS

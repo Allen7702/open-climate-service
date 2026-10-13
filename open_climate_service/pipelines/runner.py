@@ -802,16 +802,18 @@ def consume(events: list[Any]) -> None:
 def reconcile_events() -> None:
     """Decide every persisted update a pipeline missed, then advance its checkpoint safely.
 
-    The update log is the native job store: each update is stored with the job that made it,
-    and there is no cursor over it, so this reads it once (as workflow automation does at
+    Updates are read from the shared event log (`jobs.events`): each update is stored with the
+    job that made it, a native ingestion or sync, or an openEO job that published a managed
+    dataset. There is no cursor over it, so this reads it once (as workflow automation does at
     startup) and skips updates before each pipeline's checkpoint without looking further.
     The checkpoint then moves to the earliest of: the start of this pass, the creation of
-    any native job still unfinished (its update, if any, will be later), and any update
+    any native job still unfinished (its update, if any, will be later; an openEO job stamps
+    its update inside the write that persists it, so it needs no such bound), and any update
     that failed to be decided; less a margin. Updates past the checkpoint stay listed as
     handled until the checkpoint passes them.
     """
-    from open_climate_service.jobs import store as job_store
-    from open_climate_service.jobs.models import DATASET_UPDATED_EVENT_TYPE, JobStatus
+    from open_climate_service.jobs.events import read_event_log
+    from open_climate_service.jobs.models import DATASET_UPDATED_EVENT_TYPE
 
     if api_config.is_read_only():
         return
@@ -819,10 +821,9 @@ def reconcile_events() -> None:
     automating = [record for record in store.list_records() if store.automates(record.spec)]
     if not automating:
         return
-    job_records = job_store.list_job_records()
-    unfinished = {JobStatus.ACCEPTED, JobStatus.RUNNING, JobStatus.RETRYING}
-    bound = min([scan_start, *(_utc(job.created_at) for job in job_records if job.status in unfinished)])
-    updates = [event for job in job_records for event in job.events if event.type == DATASET_UPDATED_EVENT_TYPE]
+    log = read_event_log()
+    bound = scan_start if log.open_since is None else min(scan_start, log.open_since)
+    updates = [event for event in log.events if event.type == DATASET_UPDATED_EVENT_TYPE]
     for record in automating:
         retry_from: list[datetime] = []
         for event in updates:
