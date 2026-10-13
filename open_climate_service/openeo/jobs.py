@@ -491,14 +491,8 @@ class OpenEOJobService:
         publication = record.publication
         assert publication is not None
         if publication.state != "completed":
-            snapshot_id = (
-                committed_snapshot(
-                    Path(publication.store_path), publication.commit_message, publication.base_snapshot_id
-                )
-                if publication.state == "committing"
-                else None
-            )
-            if snapshot_id is None:
+            completed = self._reconcile_commit(record.id) if publication.state == "committing" else False
+            if not completed:
                 cancelled = record.cancel_requested
                 logger.warning(
                     "openEO job %s was interrupted before its managed dataset '%s' was committed; "
@@ -519,12 +513,6 @@ class OpenEOJobService:
 
                 store_update_job(record.id, _unpublished)
                 return "cancel" if cancelled else "requeue"
-            logger.warning(
-                "openEO job %s committed managed dataset '%s' before a restart; completing its publication",
-                record.id,
-                publication.dataset_id,
-            )
-            complete_managed_publication(record.id, snapshot_id)
         finished = store_update_job(record.id, lambda r: self._finish(r, f"managed://{publication.dataset_id}"))
         if finished.status == OpenEOJobStatus.FINISHED:
             self._after_finished(finished)
@@ -707,10 +695,14 @@ class OpenEOJobService:
     def delete_job(self, job_id: str) -> None:
         # 404 first so an arbitrary or malformed ID never creates a lease file.
         record = self.get_job_or_404(job_id)
+        if _commit_pending(record):
+            raise HTTPException(status_code=409, detail="Cannot delete a job with an unresolved publication commit")
         if record.status in {OpenEOJobStatus.QUEUED, OpenEOJobStatus.RUNNING}:
             raise HTTPException(status_code=400, detail="Cannot delete a running job; cancel it first")
         with result_lease(job_id):
             record = self.get_job_or_404(job_id)
+            if _commit_pending(record):
+                raise HTTPException(status_code=409, detail="Cannot delete a job with an unresolved publication commit")
             if record.status in {OpenEOJobStatus.QUEUED, OpenEOJobStatus.RUNNING}:
                 raise HTTPException(status_code=400, detail="Cannot delete a running job; cancel it first")
             store_delete_job(job_id)
@@ -1059,14 +1051,24 @@ class OpenEOJobService:
         publication = record.publication if record is not None else None
         if publication is None or publication.state != "committing":
             return None
-        snapshot_id = committed_snapshot(
-            Path(publication.store_path), publication.commit_message, publication.base_snapshot_id
-        )
-        if snapshot_id is None:
-            store_update_job(job_id, lambda r: r.model_copy(update={"publication": None, "publishing": False}))
-            return False
-        complete_managed_publication(job_id, snapshot_id)
-        return True
+        from open_climate_service.ingestions import services as ingestion_services
+
+        store_lock = ingestion_services._acquire_store_lock(Path(publication.store_path))
+        if not store_lock.acquire(blocking=False):
+            raise RuntimeError(
+                f"Managed dataset '{publication.dataset_id}' is still being written; publication recovery deferred"
+            )
+        try:
+            snapshot_id = committed_snapshot(
+                Path(publication.store_path), publication.commit_message, publication.base_snapshot_id
+            )
+            if snapshot_id is None:
+                store_update_job(job_id, lambda r: r.model_copy(update={"publication": None, "publishing": False}))
+                return False
+            complete_managed_publication(job_id, snapshot_id)
+            return True
+        finally:
+            store_lock.release()
 
     def _complete_after_failure(self, job_id: str) -> OpenEOJobRecord | None:
         """After a failure past the commit gate, finish the job if its commit can be completed.
@@ -1471,7 +1473,9 @@ def complete_managed_publication(job_id: str, snapshot_id: str) -> OpenEOJobReco
     record = planned.model_copy(
         update={"size_bytes": stored_bytes(Path(publication.store_path)), "provenance": provenance}
     )
-    stored = ingestion_services.register_artifact_record(record, publish=publication.publish_requested)
+    stored = ingestion_services.register_artifact_record(
+        record, publish=publication.publish_requested, replace_store=True
+    )
     published = stored.publication.status == PublicationStatus.PUBLISHED
     draft = (
         dataset_update_event(

@@ -54,8 +54,8 @@ class _Crash(BaseException):
     """A process dying at this point: not handled, so the job stays RUNNING."""
 
 
-def _cube(value: float) -> xr.Dataset:
-    times = pd.date_range("2026-01-01", periods=3, freq="D")
+def _cube(value: float, *, start: str = "2026-01-01") -> xr.Dataset:
+    times = pd.date_range(start, periods=3, freq="D")
     data = xr.DataArray(
         np.full((len(times), 2, 2), value, dtype="float32"),
         dims=("t", "y", "x"),
@@ -97,6 +97,7 @@ def _job(
     publish: bool = True,
     graph_runs: list[str] | None = None,
     max_attempts: int = 1,
+    start: str = "2026-01-01",
 ) -> None:
     """A queued, user-submitted job whose graph publishes `value` as a managed dataset."""
 
@@ -104,7 +105,9 @@ def _job(
         if graph_runs is not None:
             graph_runs.append(job_id)
         envelope = SaveResultEnvelope(
-            _cube(value), "ZARR", {"dataset_id": _DATASET, "variable": "precip", "publish": publish}
+            _cube(value, start=start),
+            "ZARR",
+            {"dataset_id": _DATASET, "variable": "precip", "publish": publish},
         )
         envelope.provenance = dict(_EVIDENCE)
         return envelope
@@ -293,6 +296,26 @@ def test_an_artifact_already_published_stays_published_and_is_announced(
     ]
 
 
+def test_a_full_store_rewrite_with_changed_coverage_keeps_the_published_artifact(
+    service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job("first", 5.0, monkeypatch, publish=True, start="2026-01-01")
+    service._execute("first")
+    [before] = _artifacts()
+
+    _job("second", 7.0, monkeypatch, publish=False, start="2026-02-01")
+    service._execute("second")
+
+    [after] = _artifacts()
+    assert after.artifact_id == before.artifact_id
+    assert after.publication.status == PublicationStatus.PUBLISHED
+    assert (after.coverage.temporal.start, after.coverage.temporal.end) == ("2026-02-01", "2026-02-03")
+    [event] = _record("second").events
+    assert event.data["artifact_id"] == before.artifact_id
+    assert (event.data["current_start"], event.data["current_end"]) == ("2026-02-01", "2026-02-03")
+    assert [item.event_id for item in received] == [_record("first").events[0].event_id, event.event_id]
+
+
 # --- duplicates ------------------------------------------------------------------------------
 
 
@@ -390,6 +413,28 @@ def test_a_crash_right_after_the_commit_completes_the_publication_on_restart(
     assert artifact.provenance is not None and artifact.provenance.output_snapshot_id == committed
     assert event.data["output_snapshot_id"] == committed
     assert received == [event]
+
+
+def test_recovery_waits_when_another_writer_holds_the_store(
+    service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job("job-1", 5.0, monkeypatch)
+    _wrap_writer(monkeypatch, after_commit=True)
+    with pytest.raises(_Crash):
+        service._execute("job-1")
+    lock = ingestion_services._acquire_store_lock(_store())
+    assert lock.acquire(blocking=False)
+    try:
+        with pytest.raises(RuntimeError, match="recovery deferred"):
+            service._recover("job-1")
+        pending = _record("job-1")
+        assert pending.status == OpenEOJobStatus.RUNNING
+        assert pending.publication is not None and pending.publication.state == "committing"
+        assert pending.events == [] and _artifacts() == []
+    finally:
+        lock.release()
+    assert service._recover("job-1") is False
+    assert received == [_assert_one_published_event("job-1")]
 
 
 def test_a_crash_after_registration_registers_once_and_emits_once(
@@ -529,6 +574,21 @@ def test_registration_failing_before_writing_anything_is_completed_at_restart(
     assert received == [event]
     service.reconcile_publications()  # again: nothing more
     assert _record("job-1").events == [event] and received == [event]
+
+
+def test_a_job_with_an_unresolved_commit_cannot_be_deleted(
+    service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job("job-1", 5.0, monkeypatch)
+    failing = _Failing(monkeypatch, "register_artifact_record")
+    service._execute("job-1")
+    assert _record("job-1").status == OpenEOJobStatus.ERROR
+    with pytest.raises(HTTPException, match="unresolved publication commit"):
+        service.delete_job("job-1")
+    assert _record("job-1").publication is not None
+    failing.on = False
+    service.reconcile_publications()
+    assert received == [_assert_one_published_event("job-1")]
 
 
 def test_publication_failing_after_registration_is_completed_at_restart(

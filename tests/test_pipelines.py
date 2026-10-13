@@ -2723,6 +2723,7 @@ def test_end_to_end_an_anomaly_dataset_publishes_and_drives_a_pipeline_to_dhis2(
         assert run.delivery == "submitted", (run.error, openeo_jobs.store_get_job(run.job_id))
         native = job_service_module.get_job_service()
         delivery = native.get_job_or_404(run.delivery_job_id or "")
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline and delivery.status not in {
             JobStatus.SUCCESSFUL,
             JobStatus.FAILED,
