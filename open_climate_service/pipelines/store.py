@@ -160,10 +160,19 @@ def replace_spec(record: PipelineRecord, spec: PipelineSpec, *, expected_revisio
         _start_automation(record, utc_now().isoformat())
     elif not now:
         record.automation_since = None
-        record.events = EventCheckpoint(skipped=record.events.skipped)
+        record.events = EventCheckpoint(
+            skipped=record.events.skipped,
+            skipped_discarded=record.events.skipped_discarded,
+            skipped_discarded_through=record.events.skipped_discarded_through,
+        )
 
 
 def _start_automation(record: PipelineRecord, since: str) -> None:
     """Start reacting to dataset updates from ``since``: nothing earlier is ever run by itself."""
     record.automation_since = since
-    record.events = EventCheckpoint(through=since, skipped=record.events.skipped)
+    record.events = EventCheckpoint(
+        through=since,
+        skipped=record.events.skipped,
+        skipped_discarded=record.events.skipped_discarded,
+        skipped_discarded_through=record.events.skipped_discarded_through,
+    )

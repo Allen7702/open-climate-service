@@ -278,12 +278,18 @@ def freeze_process_graph(
         raise ValueError(f"workflow calls nest deeper than {_MAX_INLINE_DEPTH}: {' > '.join(_stack)}")
     nodes: dict[str, Any] = {}
     redirect: dict[str, str] = {}
+
+    def _insert(node_id: str, node: dict[str, Any]) -> None:
+        if node_id in nodes:
+            raise ValueError(f"workflow inlining would overwrite node '{node_id}'")
+        nodes[node_id] = node
+
     for node_id, raw in process_graph.items():
         node = {**raw, "arguments": _freeze_callbacks(raw.get("arguments", {}), lookup, _stack)}
         process_id = node.get("process_id")
         record = lookup(process_id) if isinstance(process_id, str) else None
         if record is None or not record.process_graph:
-            nodes[node_id] = node
+            _insert(node_id, node)
             continue
         if record.id in _stack:
             raise ValueError(f"workflow '{record.id}' calls itself: {' > '.join((*_stack, record.id))}")
@@ -306,6 +312,6 @@ def freeze_process_graph(
             inner = {key: value for key, value in inner.items() if key != "result"}
             if inner_id == results[0] and node.get("result"):
                 inner["result"] = True
-            nodes[inner_id] = inner
+            _insert(inner_id, inner)
         redirect[node_id] = results[0]
     return {node_id: _rewrite_node_refs(node, lambda name: redirect.get(name, name)) for node_id, node in nodes.items()}

@@ -40,6 +40,7 @@ def parameter_fields(parameters: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "name": parameter["name"],
                 "kind": kind,
+                "value_kind": str(kind_type) if kind_type in _SCALARS else "string",
                 "description": parameter.get("description", ""),
                 "enum": schema.get("enum") or [],
                 "default": parameter.get("default"),
@@ -97,6 +98,7 @@ def settings_fields(schema: dict[str, Any] | None) -> list[dict[str, Any]]:
                     "title": sub.get("title", sub_name),
                     "description": sub.get("description", ""),
                     "required": sub_name in item_required,
+                    "kind": _scalar_type(_deref(schema, sub)) or "string",
                 }
                 for sub_name, sub in (items.get("properties") or {}).items()
             ]
@@ -129,8 +131,8 @@ def read_arguments(form: dict[str, str], fields: list[dict[str, Any]]) -> dict[s
                 arguments[field["name"]] = {"from_features": raw}
             elif kind in ("json", "interval"):
                 arguments[field["name"]] = json.loads(raw)
-            elif kind in ("integer", "number", "boolean"):
-                arguments[field["name"]] = _parse_scalar(kind, raw)
+            elif kind in ("integer", "number", "boolean", "enum"):
+                arguments[field["name"]] = _parse_scalar(field.get("value_kind", kind), raw)
             else:
                 arguments[field["name"]] = raw
         except ValueError as exc:
@@ -147,11 +149,16 @@ def read_settings(form: dict[str, str], fields: list[dict[str, Any]]) -> dict[st
             rows: list[dict[str, Any]] = []
             index = 0
             while any(f"dest.{name}.{index}.{column['name']}" in form for column in field["columns"]):
-                row = {
-                    column["name"]: form[f"dest.{name}.{index}.{column['name']}"].strip()
-                    for column in field["columns"]
-                    if form.get(f"dest.{name}.{index}.{column['name']}", "").strip()
-                }
+                try:
+                    row = {
+                        column["name"]: _parse_scalar(
+                            column["kind"], form[f"dest.{name}.{index}.{column['name']}"].strip()
+                        )
+                        for column in field["columns"]
+                        if form.get(f"dest.{name}.{index}.{column['name']}", "").strip()
+                    }
+                except ValueError as exc:
+                    raise ValueError(f"destination setting '{name}' row {index + 1}: {exc}") from None
                 if row:
                     rows.append(row)
                 index += 1

@@ -147,7 +147,10 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     from open_climate_service.pipelines import runner as pipeline_runner
 
     def _consume(events: list[JobEvent]) -> None:
-        automation_service.consume(events)
+        try:
+            automation_service.consume(events)
+        except Exception:
+            logger.exception("Workflow automation dispatch for dataset updates failed")
         # Pipelines run through their own runner, after triggers, on the same durable events.
         try:
             pipeline_runner.consume(events)

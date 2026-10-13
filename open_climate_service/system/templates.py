@@ -1398,7 +1398,7 @@ _API_GROUP_NOTES = {
     "Extent": "The area this instance covers.",
     "Schedules": "Everything on the clock. Sync schedules, one per dataset, under /schedules/sync.",
     "Exports": "Deliver an export to its destination, and follow the delivery job.",
-    "Pipelines": "A dataset aggregated to organisation units and delivered to DHIS2: save, dry-run, run, pause.",
+    "Pipelines": "Run a reusable workflow over bound inputs and deliver its result: save, dry-run, run, pause.",
     "System": "Health, version and the landing page's JSON form.",
 }
 
@@ -1890,6 +1890,7 @@ def render_pipelines_page(
     editing: str | None = None,
     revision: int | None = None,
     selection: dict[str, Any] | None = None,
+    read_only: bool = False,
 ) -> str:
     """Render the pipeline listing, the creation tab, or the same tab prefilled for editing."""
     from open_climate_service.pipelines import forms
@@ -1954,6 +1955,7 @@ def render_pipelines_page(
         draft=draft,
         editing=editing,
         revision=revision,
+        read_only=read_only,
     )
 
 

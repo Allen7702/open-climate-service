@@ -29,8 +29,8 @@
 
         <nav class="page-tabs" aria-label="Pipeline views">
           <a href="{{ mount }}/pipelines" {% if tab == 'list' %}aria-current="page"{% endif %}>Configured pipelines</a>
-          <a href="{{ mount }}/pipelines/new" {% if tab == 'create' and not editing %}aria-current="page"{% endif %}>Create pipeline</a>
-          {% if editing %}<a href="{{ mount }}/pipelines/{{ editing }}/edit" aria-current="page">Edit {{ editing }}</a>{% endif %}
+          {% if not read_only %}<a href="{{ mount }}/pipelines/new" {% if tab == 'create' and not editing %}aria-current="page"{% endif %}>Create pipeline</a>{% endif %}
+          {% if editing and not read_only %}<a href="{{ mount }}/pipelines/{{ editing }}/edit" aria-current="page">Edit {{ editing }}</a>{% endif %}
         </nav>
 
         {% if tab == 'list' %}
@@ -59,15 +59,17 @@
         <div class="panel empty-state">
           <h3>No pipelines yet</h3>
           <p class="note">Create one from a dataset's page, or here, when its inputs and destination are ready.</p>
-          <a class="button-link primary empty-state-action" href="{{ mount }}/pipelines/new">Create pipeline</a>
+          {% if not read_only %}<a class="button-link primary empty-state-action" href="{{ mount }}/pipelines/new">Create pipeline</a>{% endif %}
         </div>
         {% endif %}
         {% endif %}
 
-        {% if tab == 'create' %}
+        {% if tab == 'create' and read_only %}
+        <div class="notice">This instance is read-only; pipelines cannot be created or edited.</div>
+        {% elif tab == 'create' %}
         <section class="panel pipeline-create" aria-labelledby="create-title">
           <h3 id="create-title">{% if editing %}Edit pipeline{% else %}New pipeline{% endif %}</h3>
-          <p class="note">Saving validates the workflow binding, the inputs and the destination, and refuses the pipeline when a check fails. A new pipeline starts in dry-run mode and sends nothing a destination stores.</p>
+          <p class="note">Saving validates the workflow binding, the inputs and the destination, and refuses the pipeline when a check fails. A new pipeline starts in dry-run mode and sends nothing that a destination stores.</p>
           {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
           {% if checks %}
           <ul class="plain-list validation-list">

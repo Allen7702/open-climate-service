@@ -12,6 +12,7 @@ from typing import Any
 
 from open_climate_service import config as api_config
 from open_climate_service.exports.base import BaseExportPlugin, DestinationContext, PipelineDataset
+from open_climate_service.exports.manifest import plugin_identity
 from open_climate_service.pipelines import workflow as workflow_binding
 from open_climate_service.pipelines.schemas import (
     Check,
@@ -89,11 +90,29 @@ def bindings_digest(spec: PipelineSpec, bound: BoundWorkflow | None) -> str:
     destination with its settings. The name, mode and policy are left out: switching a
     pipeline live is what an approval is for, and must not invalidate it.
     """
+    from open_climate_service.exports.service import resolve_export_definition
+
+    plugin: BaseExportPlugin | None = None
+    resolved_export: dict[str, Any] | None = None
+    try:
+        plugin = destination_plugin(spec)
+        if bound is not None:
+            resolved = resolve_export_definition(compile_export(spec, bound))
+            resolved_export = {
+                "id": resolved.export_id,
+                "mapping": resolved.mapping,
+                "references": resolved.references,
+            }
+    except ValueError:
+        # Invalid bindings still need a stable digest for their validation result.
+        pass
     return json_digest(
         {
             "workflow": spec.workflow.model_dump(mode="json"),
             "definition": bound.definition_digest if bound is not None else None,
             "destination": spec.destination.model_dump(mode="json"),
+            "destination_plugin": plugin_identity(plugin).model_dump(mode="json") if plugin is not None else None,
+            "export": resolved_export,
         }
     )
 

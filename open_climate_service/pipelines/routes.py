@@ -8,6 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from open_climate_service import config as api_config
 from open_climate_service.pipelines import forms, runner, service, store
@@ -38,7 +39,10 @@ def _json_request(request: Request) -> bool:
 
 
 def _public(record: PipelineRecord) -> dict[str, Any]:
-    return {**record.model_dump(mode="json"), "approved": service.approved(record)}
+    public = record.model_dump(mode="json")
+    for run in public.get("runs", []):
+        run.pop("process", None)
+    return {**public, "approved": service.approved(record)}
 
 
 def _failures(validation: ValidationResult) -> str:
@@ -112,6 +116,8 @@ def _render_page(
     plugin_id = params.get("destination") or (draft.get("destination") or {}).get("plugin")
     if params.get("workflow") and workflow_id != (draft.get("workflow") or {}).get("id"):
         draft = {**draft, "workflow": {"id": workflow_id, "arguments": {}}}
+    if params.get("destination") and plugin_id != (draft.get("destination") or {}).get("plugin"):
+        draft = {**draft, "destination": {"plugin": plugin_id, "settings": {}}}
     if params.get("dataset") and not draft.get("workflow"):
         draft = {**draft, "prefill_dataset": params["dataset"]}
     return HTMLResponse(
@@ -126,6 +132,7 @@ def _render_page(
             editing=editing,
             revision=revision,
             selection=_form_selection(choices, workflow_id, plugin_id) if tab == "create" else {},
+            read_only=api_config.is_read_only(),
         ),
         status_code=status_code or (400 if error else 200),
     )
@@ -322,7 +329,7 @@ async def dry_run_pipeline(request: Request, pipeline_id: str) -> Response:
     _require_writable()
     record = _record_or_404(pipeline_id)
     start, end, _ = await _range(request)
-    result = service.dry_run_pipeline(record, start, end)
+    result = await run_in_threadpool(service.dry_run_pipeline, record, start, end)
 
     def _apply(current: PipelineRecord) -> None:
         if current.revision != record.revision:

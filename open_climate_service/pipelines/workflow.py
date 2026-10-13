@@ -178,6 +178,11 @@ def bind(reference: WorkflowReference) -> BoundWorkflow:
         record = frozen(record)
     except ValueError as exc:
         raise WorkflowBindingError(f"workflow '{reference.id}' cannot be frozen for a run: {exc}") from None
+    if saves_own_result(record):
+        raise WorkflowBindingError(
+            f"workflow '{reference.id}' saves its own result in a fixed format; a pipeline saves through its "
+            "destination, so choose a workflow that returns data, such as aggregate_by_features"
+        )
     return BoundWorkflow(
         record=record,
         interval_parameter=interval,

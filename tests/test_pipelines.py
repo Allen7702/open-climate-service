@@ -24,7 +24,7 @@ from open_climate_service import config as api_config
 from open_climate_service.exports import dhis2_destination
 from open_climate_service.exports.base import BaseExportPlugin, DestinationCheck, DestinationContext, RenderedExport
 from open_climate_service.openeo import workflows as workflow_store
-from open_climate_service.pipelines import runner, service, store
+from open_climate_service.pipelines import forms, runner, service, store
 from open_climate_service.pipelines import workflow as workflow_binding
 from open_climate_service.pipelines.schemas import (
     Check,
@@ -284,6 +284,34 @@ def test_a_workflow_that_saves_its_own_result_is_refused(instance: None) -> None
         )
 
 
+def test_a_workflow_that_calls_a_saving_workflow_is_refused(instance: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    saving = {
+        "id": "saving_child",
+        "parameters": [{"name": "period", "schema": {"type": "array", "subtype": "temporal-interval"}}],
+        "process_graph": {
+            "save": {
+                "process_id": "save_result",
+                "arguments": {"data": 1, "format": "JSON"},
+                "result": True,
+            }
+        },
+    }
+    outer = {
+        "id": "outer",
+        "parameters": [{"name": "period", "schema": {"type": "array", "subtype": "temporal-interval"}}],
+        "process_graph": {
+            "child": {
+                "process_id": "saving_child",
+                "arguments": {"period": {"from_parameter": "period"}},
+                "result": True,
+            }
+        },
+    }
+    monkeypatch.setattr(workflow_store, "_load_records", lambda: [outer, saving])
+    with pytest.raises(workflow_binding.WorkflowBindingError, match="saves its own result"):
+        workflow_binding.bind(WorkflowReference(id="outer"))
+
+
 def test_run_graph_freezes_the_registered_workflow(instance: None) -> None:
     spec = _spec(
         workflow={
@@ -445,6 +473,21 @@ def test_freezing_refuses_a_recursive_workflow(instance: None, monkeypatch: pyte
                 arguments={"dataset_id": "rain_monthly", "geometries": {"from_features": "districts"}},
             )
         )
+
+
+def test_freezing_refuses_inlined_node_id_collisions() -> None:
+    child = workflow_store.WorkflowRecord.model_validate(
+        {
+            "id": "child",
+            "process_graph": {"load": {"process_id": "constant", "arguments": {"x": 1}, "result": True}},
+        }
+    )
+    graph = {
+        "call": {"process_id": "child", "arguments": {}},
+        "call__load": {"process_id": "constant", "arguments": {"x": 2}, "result": True},
+    }
+    with pytest.raises(ValueError, match="would overwrite node 'call__load'"):
+        workflow_store.freeze_process_graph(graph, resolve=lambda process_id: child if process_id == "child" else None)
 
 
 def test_one_workflow_serves_several_pipelines(
@@ -654,6 +697,49 @@ def _only_drop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(export_service, "load_export_plugins", lambda: {"drop": plugin})
 
 
+def test_approval_digest_includes_plugin_identity_and_resolved_export(
+    instance: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import open_climate_service.exports.registry as registry
+    import open_climate_service.exports.service as export_service
+
+    plugin = _DropPlugin()
+    plugin.version = "1"
+    monkeypatch.setattr(service, "destination_plugins", lambda: {"drop": plugin})
+    monkeypatch.setattr(registry, "load_export_plugins", lambda: {"drop": plugin})
+    monkeypatch.setattr(export_service, "load_export_plugins", lambda: {"drop": plugin})
+    spec = _spec(destination={"plugin": "drop", "settings": {"folder": "/srv/out"}})
+    bound = workflow_binding.bind(spec.workflow)
+    original = service.bindings_digest(spec, bound)
+    plugin.version = "2"
+    assert service.bindings_digest(spec, bound) != original
+    plugin.version = "1"
+    monkeypatch.setattr(plugin, "export_definition", lambda settings, context: {"dataset": "different"})
+    assert service.bindings_digest(spec, bound) != original
+
+
+def test_form_parsing_preserves_enum_and_row_scalar_types() -> None:
+    arguments = forms.parameter_fields([{"name": "level", "schema": {"type": "integer", "enum": [1, 2]}}])
+    assert forms.read_arguments({"arg.level": "2"}, arguments) == {"level": 2}
+    settings = forms.settings_fields(
+        {
+            "type": "object",
+            "properties": {
+                "series": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"factor": {"type": "number"}, "enabled": {"type": "boolean"}},
+                    },
+                }
+            },
+        }
+    )
+    assert forms.read_settings({"dest.series.0.factor": "1.5", "dest.series.0.enabled": "true"}, settings) == {
+        "series": [{"factor": 1.5, "enabled": True}]
+    }
+
+
 def test_the_core_needs_no_dhis2_identifiers(instance: None, monkeypatch: pytest.MonkeyPatch) -> None:
     _only_drop(monkeypatch)
     spec = _spec(destination={"plugin": "drop", "settings": {"folder": "/srv/out"}})
@@ -790,6 +876,38 @@ def test_page_creates_validates_and_shows_a_pipeline(client: TestClient, monkeyp
     listed = client.get("/pipelines", headers={"Accept": "application/json"}).json()
     assert [item["spec"]["id"] for item in listed["items"]] == ["rain-to-dhis2"]
     assert listed["items"][0]["validation"]["valid"] is True
+
+
+def test_pipeline_list_never_exposes_a_pending_run_process(client: TestClient) -> None:
+    record = store.create_record(_spec())
+    record.runs.append(
+        runner.PipelineRun(
+            run_id="r1",
+            job_id="j1",
+            mode="dry_run",
+            start="a",
+            end="b",
+            submitted_at="x",
+            idempotency_key="k",
+            process={"process_graph": {"secretly-large": {"process_id": "constant", "arguments": {}}}},
+        )
+    )
+    store.update_record(record.spec.id, lambda current: setattr(current, "runs", record.runs))
+    listed = client.get("/pipelines", headers={"Accept": "application/json"}).json()
+    assert "process" not in listed["items"][0]["runs"][0]
+
+
+def test_read_only_pipeline_pages_hide_create_and_edit_forms(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.create_record(_spec())
+    monkeypatch.setattr(api_config, "is_read_only", lambda: True)
+    listing = client.get("/pipelines", headers={"Accept": "text/html"})
+    assert 'href="/pipelines/new"' not in listing.text
+    create = client.get("/pipelines/new", headers={"Accept": "text/html"})
+    edit = client.get("/pipelines/rain-to-dhis2/edit", headers={"Accept": "text/html"})
+    assert "read-only" in create.text and "<form" not in create.text
+    assert "read-only" in edit.text and "<form" not in edit.text
 
 
 def test_the_dataset_page_offers_to_create_a_pipeline() -> None:
@@ -1569,6 +1687,10 @@ def test_the_skipped_list_is_bounded_and_says_what_it_dropped(
     assert [item.event_id for item in events.skipped] == ["evt-3", "evt-2"]
     assert events.skipped_discarded == 2
     assert events.skipped_discarded_through == (start + timedelta(seconds=1)).isoformat()
+    assert client.post("/pipelines/rain-to-dhis2/mode/dry_run", headers=html, follow_redirects=False).status_code == 303
+    resumed = store.get_record("rain-to-dhis2").events  # type: ignore[union-attr]
+    assert resumed.skipped_discarded == 2
+    assert resumed.skipped_discarded_through == (start + timedelta(seconds=1)).isoformat()
     page = client.get("/pipelines/rain-to-dhis2", headers=html)
     assert "2 older entries were discarded" in page.text and "not an audit trail" in page.text
 

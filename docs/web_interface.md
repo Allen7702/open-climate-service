@@ -316,6 +316,7 @@ save (with an optional `revision`), `DELETE /pipelines/{id}`, `POST /pipelines/{
 `POST /pipelines/{id}/dry-run` and `POST /pipelines/{id}/runs` with `start` and `end` (and `mode`
 for a run), `POST /pipelines/{id}/runs/{run_id}/deliver`, `POST /pipelines/{id}/runs/{run_id}/redeliver`,
 `POST /pipelines/{id}/runs/{run_id}/retry`,
+`POST /pipelines/{id}/runs/{run_id}/acknowledge`,
 and `POST /pipelines/{id}/mode/{dry_run|live|paused}`.
 
 ### The dataset page (`/datasets/{dataset_id}`)
