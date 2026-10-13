@@ -1,138 +1,135 @@
-"""The pipeline object and the records of what was checked and run for it."""
+"""The pipeline object and the records of what was checked and run for it.
+
+A workflow is a reusable, parameterized sequence of processes that defines how data is
+transformed or analyzed. A pipeline is a managed configuration that connects a workflow to
+its inputs and destination, governing when it runs, how results are delivered, and how
+execution is monitored. The spec therefore holds a reference to one workflow and its
+argument bindings, a destination plugin and its opaque settings, and a delivery policy;
+never a process graph or destination-specific fields.
+"""
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from open_climate_service.shared.features import is_dhis2_uid
-from open_climate_service.shared.urls import is_segment_safe_id
-
-SpatialReducer = Literal["mean", "sum", "min", "max", "median"]
-SPATIAL_REDUCERS: tuple[str, ...] = ("mean", "sum", "min", "max", "median")
+# A pipeline id is also the id of the named export its results are saved through.
+_PIPELINE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
-class PipelineSource(BaseModel):
-    """Which managed dataset the pipeline reads. Its cadence sets the export period.
+class WorkflowReference(BaseModel):
+    """Exactly one registered workflow and the arguments the pipeline binds to it.
 
-    The pipeline never fetches data itself. Keeping the dataset current is the dataset's own
-    sync schedule, managed with the instance's schedules; the pipeline reacts to its updates.
+    Arguments are checked against the workflow's declared parameters. A feature collection is
+    bound as ``{"from_features": "<collection id>"}``, resolved at submission to the
+    collection's current version. The workflow's one unbound ``temporal-interval`` parameter
+    receives each run's interval, so it is never bound here.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    dataset: str = Field(description="Id of a published managed dataset, as listed under GET /datasets.")
-
-
-class OrganisationUnits(BaseModel):
-    """Where the organisation unit geometry comes from: a registered feature collection."""
-
-    feature_collection: str = Field(description="Id of a registered feature collection, as listed under GET /features.")
-
-
-class PipelineSeries(BaseModel):
-    """One dataset variable going to one DHIS2 data element."""
-
-    data_element: str = Field(description="DHIS2 data element UID the values are imported into.")
-    variable: str | None = Field(default=None, description="Dataset variable to export; defaults to the dataset's one.")
-
-    @field_validator("data_element")
-    @classmethod
-    def _uid(cls, value: str) -> str:
-        if not is_dhis2_uid(value):
-            raise ValueError("data_element must be a DHIS2 UID: 11 characters, a letter first")
-        return value
+    id: str = Field(min_length=1, description="Id of a registered workflow, as listed under GET /process_graphs.")
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
 
 class PipelineDestination(BaseModel):
-    """The DHIS2 side: connection, data set, organisation units and the series mapping."""
+    """Which export plugin renders and delivers the results, with that plugin's own settings.
 
-    type: Literal["dhis2"] = "dhis2"
-    connection: str = Field(description="Id of a named DHIS2 connection from the instance configuration.")
-    data_set: str | None = Field(
-        default=None, description="DHIS2 data set UID, checked for period type and assignment."
-    )
-    organisation_units: OrganisationUnits
-    series: list[PipelineSeries] = Field(min_length=1)
+    The core never reads ``settings``: the plugin validates them, compiles them into the
+    pipeline's named export, and runs its destination-side checks.
+    """
 
-    @field_validator("data_set")
-    @classmethod
-    def _data_set_uid(cls, value: str | None) -> str | None:
-        if value is not None and not is_dhis2_uid(value):
-            raise ValueError("data_set must be a DHIS2 UID: 11 characters, a letter first")
-        return value
+    model_config = ConfigDict(extra="forbid")
 
-
-class SpatialAggregation(BaseModel):
-    """How pixel values are combined within each organisation unit."""
-
-    reducer: SpatialReducer = "mean"
-
-
-class PipelineAggregation(BaseModel):
-    """Spatial only in this slice: the export period is the dataset's own cadence."""
-
-    spatial: SpatialAggregation = Field(default_factory=SpatialAggregation)
+    plugin: str = Field(min_length=1, description="Id of an export plugin that is a pipeline destination.")
+    settings: dict[str, Any] = Field(default_factory=dict)
 
 
 DeliveryMode = Literal["dry_run", "live", "paused"]
-DeliveryPolicy = Literal["on_update", "manual", "scheduled"]
+DeliveryPolicy = Literal["on_update", "manual"]
 
 
 class PipelineDelivery(BaseModel):
-    """Whether, which and when: how a finished export is sent to DHIS2.
+    """Whether and when results go out.
 
-    ``mode`` says whether anything goes out: validated only (dry run), written (live), or held
-    (paused). ``range`` says which values. ``policy`` says when: after each dataset update, only
-    when an operator runs or delivers by hand, or at a release time of its own. A scheduled
-    release is accepted so the shape is final, but it is not applied until stored pipelines are
-    read by the automation; until then it behaves as manual and the validation says so.
+    ``mode`` says whether anything goes out: validated by the destination only (dry run),
+    written (live), or held (paused). ``policy`` says when a run starts by itself: after each
+    update of a source dataset, or never (manual). A release schedule of its own is not
+    implemented, so it is not accepted.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     mode: DeliveryMode = "dry_run"
     policy: DeliveryPolicy = "on_update"
-    release_cron: str | None = Field(
-        default=None, description="Five-field cron for a scheduled release; required when policy is scheduled."
-    )
-    range: Literal["updated", "all"] = Field(
-        default="updated",
-        description="Process the updated interval (default) or the complete stored history after every update.",
-    )
 
-    @model_validator(mode="after")
-    def _release_matches_policy(self) -> "PipelineDelivery":
-        if self.policy == "scheduled":
-            if not self.release_cron:
-                raise ValueError("a scheduled release needs release_cron")
-            try:
-                CronTrigger.from_crontab(self.release_cron)
-            except ValueError as exc:
-                raise ValueError(f"invalid five-field cron expression {self.release_cron!r}: {exc}") from exc
-        elif self.release_cron:
-            raise ValueError("release_cron only applies when policy is scheduled")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_unimplemented(cls, value: Any) -> Any:
+        if isinstance(value, dict) and (value.get("policy") == "scheduled" or value.get("release_cron")):
+            raise ValueError(
+                "a scheduled release is not implemented yet; use on_update or manual, and keep the source dataset "
+                "current with its sync schedule"
+            )
+        return value
 
 
 class PipelineSpec(BaseModel):
-    """What an operator declares: a source, a destination, an aggregation and a delivery."""
+    """What an operator declares: one workflow with its bindings, a destination and a delivery."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     name: str | None = None
-    source: PipelineSource
+    workflow: WorkflowReference
     destination: PipelineDestination
-    aggregation: PipelineAggregation = Field(default_factory=PipelineAggregation)
     delivery: PipelineDelivery = Field(default_factory=PipelineDelivery)
 
     @field_validator("id")
     @classmethod
-    def _segment_safe(cls, value: str) -> str:
-        if not is_segment_safe_id(value):
-            raise ValueError("id must start with a letter or digit and carry only letters, digits, '.', '_' or '-'")
+    def _export_safe(cls, value: str) -> str:
+        if not _PIPELINE_ID.fullmatch(value):
+            raise ValueError("id must start with a letter or digit and carry only letters, digits, '_' or '-'")
         return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, value: Any) -> Any:
+        """Read a draft record saved before workflows were referenced, once, into this shape.
+
+        The first pipeline drafts embedded the DHIS2 destination and a spatial reducer. They map
+        onto ``aggregate_by_features`` and the ``dhis2`` destination; ``range`` and a scheduled
+        release have no counterpart and are dropped. The next save writes the new shape.
+        """
+        if not isinstance(value, dict) or "source" not in value or "workflow" in value:
+            return value
+        legacy: dict[str, Any] = dict(value)
+        source = legacy.pop("source", {}) or {}
+        destination = legacy.pop("destination", {}) or {}
+        aggregation = legacy.pop("aggregation", {}) or {}
+        delivery = dict(legacy.pop("delivery", {}) or {})
+        reducer = (aggregation.get("spatial") or {}).get("reducer", "mean")
+        units = destination.get("organisation_units") or {}
+        delivery.pop("range", None)
+        delivery.pop("release_cron", None)
+        if delivery.get("policy") == "scheduled":
+            delivery["policy"] = "manual"
+        settings = {key: destination[key] for key in ("connection", "data_set", "series") if key in destination}
+        return {
+            **legacy,
+            "workflow": {
+                "id": "aggregate_by_features",
+                "arguments": {
+                    "dataset_id": source.get("dataset"),
+                    "geometries": {"from_features": units.get("feature_collection")},
+                    "method": reducer,
+                },
+            },
+            "destination": {"plugin": destination.get("type", "dhis2"), "settings": settings},
+            "delivery": delivery,
+        }
 
 
 class Check(BaseModel):
@@ -146,57 +143,182 @@ class Check(BaseModel):
 class ValidationResult(BaseModel):
     """The outcome of validating a pipeline, kept on its record."""
 
+    model_config = ConfigDict(extra="ignore")
+
     valid: bool
     checked_at: str
-    period_type: str | None = Field(
-        default=None, description="The DHIS2 period the pipeline exports, from the dataset cadence."
+    bindings: str | None = Field(default=None, description="Digest of the bindings this result judged.")
+    revision: int | None = Field(
+        default=None, description="The pipeline revision this result was stored for; set when it is stored."
+    )
+    export: dict[str, Any] | None = Field(
+        default=None, description="The named-export definition compiled from the destination, when it compiled."
     )
     checks: list[Check]
 
 
 class DryRunResult(BaseModel):
-    """The outcome of a dry run: the payload summary and DHIS2's own validation of it."""
+    """The outcome of a dry run: what was rendered and the destination's own verdict on it."""
+
+    model_config = ConfigDict(extra="ignore")
 
     ran_at: str
     start: str
     end: str
+    bindings: str | None = Field(default=None, description="Digest of the bindings the dry run was judged on.")
     values: int = 0
-    org_units: int = 0
     periods: list[str] = Field(default_factory=list)
     sample: list[dict[str, Any]] = Field(default_factory=list)
     report: dict[str, Any] | None = None
+    rendered_only: bool = Field(
+        default=False, description="True when the destination cannot validate a dry run, so it was only rendered."
+    )
     error: str | None = None
 
     @property
     def passed(self) -> bool:
-        """Whether DHIS2 validated every value: a dry-run outcome and no conflicts."""
+        """Rendered without error and, where the destination validates, accepted with no conflicts."""
+        if self.error is not None:
+            return False
+        if self.rendered_only:
+            return self.values > 0
         report = self.report or {}
-        return (
-            self.error is None and bool(report) and report.get("outcome") == "dry_run" and not report.get("conflicts")
-        )
+        return bool(report) and report.get("outcome") == "dry_run" and not report.get("conflicts")
+
+
+RunTrigger = Literal["manual", "dataset_update", "retry"]
+RunSubmission = Literal["pending", "submitted", "failed"]
+RunJobOutcome = Literal["error", "canceled", "missing"]
+RunDelivery = Literal["awaiting", "held", "submitted", "failed"]
+DeliveryResult = Literal[
+    "delivered", "validated", "acknowledged", "partial", "rejected", "unknown", "failed", "cancelled"
+]
 
 
 class PipelineRun(BaseModel):
-    """One deliberate run: a batch job through the pipeline's export, then its delivery."""
+    """One invocation of the pipeline's workflow over an explicit interval, and its delivery.
 
+    The run is stored with ``submission: pending`` and its deterministic job id before the
+    job exists, so an interrupted submission is found and finished later.
+
+    States, and who moves a run out of them:
+
+    - ``submission``: ``pending`` is retried automatically, a bounded number of times;
+      ``failed`` is terminal (a permanent refusal, or the attempts ran out): run it again.
+    - ``job_outcome`` is recorded once the job ended without a result: ``error``,
+      ``canceled`` or ``missing`` (deleted). Terminal: run it again.
+    - ``delivery``: ``awaiting`` is handed off automatically when the job finishes, and a
+      transient hand-off failure is retried a bounded number of times under the same
+      idempotency key; ``held`` waits for the pipeline to be resumed or live again, and is
+      released then; ``failed`` is terminal until an operator delivers it by hand;
+      ``submitted`` means handed to the delivery framework, not delivered.
+    - ``delivery_result`` is the delivery job's confirmed outcome, recorded once it ends:
+      ``delivered`` or ``validated`` (a dry run) confirm it; ``partial`` (conflicts),
+      ``rejected``, ``unknown`` (no answer after sending, or the delivery job's record is gone),
+      ``failed`` and ``cancelled`` need an operator, who sends it again where that is safe, or
+      checks the destination and records ``acknowledged``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    run_id: str
+    trigger: RunTrigger = "manual"
+    event_id: str | None = None
+    retry_of: str | None = None
+    revision: int = 1
+    bindings: str | None = None
+    workflow_id: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict, description="The resolved arguments, as submitted.")
+    process: dict[str, Any] | None = Field(default=None, description="The submitted process graph.")
+    source: dict[str, Any] = Field(default_factory=dict, description="Source dataset and artifact, where known.")
     job_id: str
     mode: Literal["dry_run", "live"]
     start: str
     end: str
     submitted_at: str
     idempotency_key: str
+    submission: RunSubmission = "submitted"
+    submission_attempts: int = 0
+    job_outcome: RunJobOutcome | None = None
+    delivery: RunDelivery = "awaiting"
+    delivery_attempts: int = 0
+    delivery_round: int = Field(default=0, description="Bumped by a redelivery after the delivery job failed.")
+    delivery_result: DeliveryResult | None = None
     delivery_job_id: str | None = None
     delivery_status_url: str | None = None
     delivered_at: str | None = None
     error: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, value: Any) -> Any:
+        """Runs stored before run ids were their own: the job id was the run's identity."""
+        if isinstance(value, dict) and "run_id" not in value and "job_id" in value:
+            value = {**value, "run_id": value["job_id"]}
+            if value.get("delivery_job_id"):
+                value["delivery"] = "submitted"
+        return value
+
+
+class SkippedUpdate(BaseModel):
+    """A dataset update the pipeline decided not to run, kept so an operator can run it by hand."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    event_id: str
+    time: str
+    dataset_id: str | None = None
+    start: str | None = None
+    end: str | None = None
+    reason: str
+
+
+class EventCheckpoint(BaseModel):
+    """Which dataset updates this pipeline has decided on, independent of its run history.
+
+    Every update with a time before ``through`` is decided; past it, ``handled`` holds the ids
+    of the decided ones with their times. ``through`` only advances to a time no update still
+    to be persisted can precede, so a delayed or out-of-order update is never skipped, and
+    pruning the run history cannot cause a replay.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    through: str | None = None
+    handled: dict[str, str] = Field(default_factory=dict)
+    retries: dict[str, int] = Field(
+        default_factory=dict, description="Failed attempts to decide an update that may succeed later."
+    )
+    skipped: list[SkippedUpdate] = Field(
+        default_factory=list,
+        description=(
+            "Updates not run, newest first; kept across pauses and resumes. A bounded list for an operator, "
+            "not an audit trail: past its size the oldest entries are discarded and counted below."
+        ),
+    )
+    skipped_discarded: int = Field(default=0, description="Entries discarded from `skipped` to keep it bounded.")
+    skipped_discarded_through: str | None = Field(
+        default=None, description="Time of the newest update whose entry was discarded."
+    )
+
 
 class PipelineRecord(BaseModel):
-    """A stored pipeline with its latest validation, dry run and runs."""
+    """A stored pipeline with its revision, latest validation, dry run and runs."""
+
+    model_config = ConfigDict(extra="ignore")
 
     spec: PipelineSpec
+    revision: int = Field(
+        default=1, description="Bumped on every change to the spec; edits must name the one they read."
+    )
     created_at: str
+    updated_at: str | None = None
+    automation_since: str | None = Field(
+        default=None, description="When dataset updates started to run this pipeline; none while it does not."
+    )
     validation: ValidationResult | None = None
     dry_run: DryRunResult | None = None
-    runs: list[PipelineRun] = Field(default_factory=list, description="Newest first.")
-    model_config = ConfigDict(extra="forbid")
+    runs: list[PipelineRun] = Field(
+        default_factory=list, description="Newest first; settled runs beyond the retained number are dropped."
+    )
+    events: EventCheckpoint = Field(default_factory=EventCheckpoint)

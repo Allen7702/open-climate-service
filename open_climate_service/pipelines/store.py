@@ -1,19 +1,30 @@
-"""Pipelines persist as one JSON file each under the data directory."""
+"""Pipelines persist as one JSON file each under the data directory.
+
+Every change is a read-modify-write under a per-pipeline file lock shared by all API
+workers, so a run hand-off on a job thread and an edit in a request never write over
+each other. Callers pass a mutation, not a record they read earlier.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
 import tempfile
-import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from open_climate_service import config as api_config
-from open_climate_service.pipelines.schemas import PipelineRecord, PipelineSpec, ValidationResult
+from open_climate_service.pipelines.schemas import EventCheckpoint, PipelineRecord, PipelineSpec, ValidationResult
+from open_climate_service.shared.persistence import index_lock
 from open_climate_service.shared.time import utc_now
 
 logger = logging.getLogger(__name__)
-_LOCK = threading.Lock()
+_T = TypeVar("_T")
+
+
+class StaleRevision(ValueError):
+    """An edit was based on a revision that has since changed."""
 
 
 def pipelines_dir() -> Path:
@@ -42,49 +53,117 @@ def list_records() -> list[PipelineRecord]:
 
 def get_record(pipeline_id: str) -> PipelineRecord | None:
     """One stored pipeline, or None."""
-    path = _path(pipeline_id)
     try:
-        return PipelineRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        return PipelineRecord.model_validate_json(_path(pipeline_id).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
 
 
-def save_record(record: PipelineRecord) -> PipelineRecord:
-    """Write a record atomically and return it."""
-    directory = pipelines_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    target = _path(record.spec.id)
-    with _LOCK:
-        _write_record(record, target, directory)
-    return record
-
-
-def _write_record(record: PipelineRecord, target: Path, directory: Path) -> None:
-    """Write while the caller holds ``_LOCK``."""
-    with tempfile.NamedTemporaryFile("w", dir=directory, prefix=".pipeline-", encoding="utf-8", delete=False) as handle:
+def _write_record(record: PipelineRecord, target: Path) -> None:
+    """Write atomically while the caller holds the record's lock."""
+    with tempfile.NamedTemporaryFile(
+        "w", dir=target.parent, prefix=".pipeline-", encoding="utf-8", delete=False
+    ) as handle:
         handle.write(record.model_dump_json(indent=2))
         handle.write("\n")
     os.replace(handle.name, target)
 
 
+def update_record(pipeline_id: str, mutation: Callable[[PipelineRecord], _T]) -> tuple[PipelineRecord, _T]:
+    """Apply ``mutation`` to the current record under its lock and store the result.
+
+    The mutation edits the record in place and may raise to abort without writing. Raises
+    LookupError when the pipeline does not exist.
+    """
+    target = _path(pipeline_id)
+    with index_lock(target):
+        record = get_record(pipeline_id)
+        if record is None:
+            raise LookupError(f"Unknown pipeline '{pipeline_id}'")
+        result = mutation(record)
+        record.updated_at = utc_now().isoformat()
+        _write_record(record, target)
+    return record, result
+
+
 def create_record(spec: PipelineSpec, validation: ValidationResult | None = None) -> PipelineRecord:
     """Store a new pipeline with the validation it was saved on; an existing id is refused."""
-    directory = pipelines_dir()
-    directory.mkdir(parents=True, exist_ok=True)
     target = _path(spec.id)
-    record = PipelineRecord(spec=spec, created_at=utc_now().isoformat(), validation=validation)
-    with _LOCK:
+    now = utc_now().isoformat()
+    if validation is not None:
+        validation = validation.model_copy(update={"revision": 1})
+    record = PipelineRecord(spec=spec, created_at=now, updated_at=now, validation=validation)
+    if automates(spec):
+        _start_automation(record, now)
+    with index_lock(target):
         if target.exists():
             raise ValueError(f"A pipeline with id '{spec.id}' already exists")
-        _write_record(record, target, directory)
+        _write_record(record, target)
+    return record
+
+
+def save_record(record: PipelineRecord) -> PipelineRecord:
+    """Overwrite a record as a whole. Only for tests and migrations; requests use `update_record`."""
+    target = _path(record.spec.id)
+    with index_lock(target):
+        _write_record(record, target)
     return record
 
 
 def delete_record(pipeline_id: str) -> bool:
     """Remove a stored pipeline; True when something was removed."""
-    with _LOCK:
+    target = _path(pipeline_id)
+    with index_lock(target):
         try:
-            _path(pipeline_id).unlink()
+            target.unlink()
         except FileNotFoundError:
             return False
     return True
+
+
+def install_validation(record: PipelineRecord, validation: ValidationResult, *, judged_revision: int) -> None:
+    """Store a validation on the record, refusing one computed for a revision that has since changed.
+
+    Validation runs outside the lock (it may contact the destination), so the record can move
+    on meanwhile; installing the old verdict would publish an export for a spec it never saw.
+    """
+    if record.revision != judged_revision:
+        raise StaleRevision(
+            f"pipeline '{record.spec.id}' changed while it was being checked (revision {judged_revision} became "
+            f"{record.revision}); check it again"
+        )
+    record.validation = validation.model_copy(update={"revision": record.revision})
+
+
+def automates(spec: PipelineSpec) -> bool:
+    """Whether dataset updates start runs of this pipeline by themselves."""
+    return spec.delivery.policy == "on_update" and spec.delivery.mode != "paused"
+
+
+def replace_spec(record: PipelineRecord, spec: PipelineSpec, *, expected_revision: int | None) -> None:
+    """Swap the spec in place, refusing a stale edit and stamping when automation starts or stops."""
+    if expected_revision is not None and expected_revision != record.revision:
+        raise StaleRevision(
+            f"pipeline '{record.spec.id}' changed since revision {expected_revision} was read (now "
+            f"{record.revision}); reload it and apply the change again"
+        )
+    was, now = automates(record.spec), automates(spec)
+    mode_changed = spec.delivery.mode != record.spec.delivery.mode
+    bindings_changed = spec.workflow != record.spec.workflow or spec.destination != record.spec.destination
+    if spec != record.spec:
+        record.revision += 1
+    record.spec = spec
+    # A new boundary whenever automation starts, changes mode or changes what it computes:
+    # updates from before going live are never delivered live, and updates that arrived for
+    # other bindings are never run with the new ones.
+    if now and (not was or mode_changed or bindings_changed):
+        _start_automation(record, utc_now().isoformat())
+    elif not now:
+        record.automation_since = None
+        record.events = EventCheckpoint(skipped=record.events.skipped)
+
+
+def _start_automation(record: PipelineRecord, since: str) -> None:
+    """Start reacting to dataset updates from ``since``: nothing earlier is ever run by itself."""
+    record.automation_since = since
+    record.events = EventCheckpoint(through=since, skipped=record.events.skipped)

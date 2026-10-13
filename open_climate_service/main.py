@@ -18,6 +18,7 @@ from open_climate_service.exports import routes as exports_routes
 from open_climate_service.extents import routes as extent_routes
 from open_climate_service.features import routes as feature_routes
 from open_climate_service.ingestions import routes as ingestion_routes
+from open_climate_service.jobs.models import JobEvent
 from open_climate_service.jobs.service import get_job_service
 from open_climate_service.openeo import routes as openeo_routes
 from open_climate_service.openeo.jobs import get_openeo_job_service
@@ -91,6 +92,18 @@ async def _collect_pending_garbage_periodically() -> None:
             logger.exception("Pending store collections failed; retrying at the next interval")
 
 
+async def _recover_pipeline_runs_periodically() -> None:
+    """Retry what pipeline runs left open (bounded per run), for as long as the app runs."""
+    from open_climate_service.pipelines.runner import recover_runs
+
+    while True:
+        await asyncio.sleep(_MAINTENANCE_INTERVAL_S)
+        try:
+            await asyncio.to_thread(recover_runs)
+        except Exception:
+            logger.exception("Pipeline run recovery failed; retrying at the next interval")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Run lightweight startup recovery hooks for the application lifecycle."""
@@ -107,6 +120,7 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     validate_configured_exports()
     maintenance: asyncio.Task[None] | None = None
+    pipeline_recovery: asyncio.Task[None] | None = None
     if not api_config.is_read_only():
         # Before any job is recovered, so no pyramid rebuild can be in progress. A read-only
         # instance may share its data directory with a writing one, so it leaves them alone.
@@ -124,23 +138,33 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         except Exception:
             logger.exception("Could not run pending store collections; continuing startup")
         maintenance = asyncio.create_task(_collect_pending_garbage_periodically())
+        pipeline_recovery = asyncio.create_task(_recover_pipeline_runs_periodically())
     job_service = get_job_service()
     job_service.recover_pending_jobs()
     openeo_service = get_openeo_job_service()
     automation_service = get_workflow_automation_service()
     automation_service.start()
-    job_service.set_event_consumer(automation_service.consume)
+    from open_climate_service.pipelines import runner as pipeline_runner
+
+    def _consume(events: list[JobEvent]) -> None:
+        automation_service.consume(events)
+        # Pipelines run through their own runner, after triggers, on the same durable events.
+        try:
+            pipeline_runner.consume(events)
+        except Exception:
+            logger.exception("Pipeline dispatch for dataset updates failed")
+
+    job_service.set_event_consumer(_consume)
     # Registered before openEO jobs are recovered: a re-enqueued triggered job records the
     # delivery it owes as it finishes, which it cannot do before these are in place. A job
     # finishing during reconciliation is caught by one or the other; the deterministic
     # delivery key makes being caught by both harmless.
     openeo_service.set_delivery_due_provider(automation_service.delivery_due_for)
     from open_climate_service.openeo.schemas import OpenEOJobRecord
-    from open_climate_service.pipelines.service import on_job_finished as pipeline_job_finished
 
     def _job_finished(record: OpenEOJobRecord) -> None:
         automation_service.on_job_finished(record)
-        pipeline_job_finished(record)
+        pipeline_runner.on_job_finished(record)
 
     openeo_service.set_finished_listener(_job_finished)
     openeo_service.recover_pending_jobs()
@@ -148,6 +172,10 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         automation_service.reconcile_deliveries()
     except Exception:
         logger.exception("Workflow delivery reconciliation failed; continuing startup")
+    try:
+        pipeline_runner.reconcile()
+    except Exception:
+        logger.exception("Pipeline run reconciliation failed; continuing startup")
     try:
         automation_service.replay()
     except Exception:
@@ -161,6 +189,8 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     finally:
         if maintenance is not None:
             maintenance.cancel()
+        if pipeline_recovery is not None:
+            pipeline_recovery.cancel()
         job_service.set_event_consumer(None)
         # The listener goes first: a delivery a job records from here on is reconciled at the
         # next start. The delivery provider is deliberately left in place. The executor does

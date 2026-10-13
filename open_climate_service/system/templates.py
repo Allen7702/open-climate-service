@@ -1888,9 +1888,12 @@ def render_pipelines_page(
     checks: Any = None,
     draft: dict[str, Any] | None = None,
     editing: str | None = None,
+    revision: int | None = None,
+    selection: dict[str, Any] | None = None,
 ) -> str:
     """Render the pipeline listing, the creation tab, or the same tab prefilled for editing."""
-    from open_climate_service.pipelines.schemas import SPATIAL_REDUCERS
+    from open_climate_service.pipelines import forms
+    from open_climate_service.pipelines.service import approved
 
     rows = []
     for record in records:
@@ -1899,13 +1902,36 @@ def render_pipelines_page(
             {
                 "id": spec.id,
                 "title": spec.name or spec.id,
-                "dataset": spec.source.dataset,
-                "collection": spec.destination.organisation_units.feature_collection,
-                "element": ", ".join(series.data_element for series in spec.destination.series),
+                "workflow": spec.workflow.id,
+                "destination": spec.destination.plugin,
+                "mode": spec.delivery.mode,
+                "policy": spec.delivery.policy,
                 "validation": (("valid" if record.validation.valid else "invalid") if record.validation else None),
-                "dry_run": (("passed" if record.dry_run.passed else "failed") if record.dry_run else None),
+                "dry_run": (
+                    ("approved" if approved(record) else ("passed" if record.dry_run.passed else "failed"))
+                    if record.dry_run
+                    else None
+                ),
+                "last_run": record.runs[0] if record.runs else None,
             }
         )
+    draft = draft or {}
+    selection = selection or {}
+    arguments = dict((draft.get("workflow") or {}).get("arguments") or {})
+    prefill = draft.get("prefill_dataset")
+    parameter_fields = []
+    for field in selection.get("parameter_fields", []):
+        value = forms.argument_value(arguments, field)
+        if not value and prefill and field["kind"] == "dataset":
+            value = prefill
+        parameter_fields.append({**field, "value": value})
+    settings = dict((draft.get("destination") or {}).get("settings") or {})
+    settings_fields = []
+    for field in selection.get("settings_fields", []):
+        entry = {**field, "value": forms.setting_value(settings, field)}
+        if field["kind"] == "rows":
+            entry["rows"] = forms.setting_rows(settings, field)
+        settings_fields.append(entry)
     return get_template("pipelines_page.html").render(
         version=app_version,
         mount=mount,
@@ -1915,25 +1941,41 @@ def render_pipelines_page(
         nav=page_nav(mount, "pipelines"),
         tab=tab,
         pipelines=rows,
+        workflows=choices.get("workflows", []),
+        destinations=choices.get("destinations", []),
         datasets=choices.get("datasets", []),
         collections=choices.get("collections", []),
-        connections=choices.get("connections", []),
-        reducers=SPATIAL_REDUCERS,
+        workflow=selection.get("workflow"),
+        destination=selection.get("destination"),
+        parameter_fields=parameter_fields,
+        settings_fields=settings_fields,
         error=error,
         checks=checks,
-        draft=draft or {},
+        draft=draft,
         editing=editing,
+        revision=revision,
     )
 
 
-def render_pipeline_page(record: Any, compiled: str, runs: list[dict[str, Any]], mount: str) -> str:
-    """Render one pipeline: its bindings, validation, dry run, runs and generated configuration."""
+def render_pipeline_page(record: Any, runs: list[dict[str, Any]], mount: str) -> str:
+    """Render one pipeline: its workflow binding, destination, validation, dry run, delivery and runs."""
+    from open_climate_service.pipelines.service import approved
+
     spec = record.spec
-    period_type = record.validation.period_type if record.validation else None
-    dataset = next((d for d in _load_datasets() if d.dataset_id == spec.source.dataset), None)
-    coverage = dataset.extent.temporal if dataset is not None else None
+    validation = record.validation
+    datasets = {d.dataset_id: d for d in _load_datasets()}
+    coverages = [
+        datasets[dataset_id].extent.temporal
+        for dataset_id in spec.workflow.arguments.values()
+        if isinstance(dataset_id, str) and dataset_id in datasets
+    ]
+    coverage = coverages[0] if coverages else None
     range_start = _iso_day(coverage.start, first=True) if coverage and coverage.start else ""
     range_end = _iso_day(coverage.end, first=False) if coverage and coverage.end else ""
+    arguments = [
+        {"name": name, "value": value if isinstance(value, str) else json.dumps(value)}
+        for name, value in spec.workflow.arguments.items()
+    ]
     return get_template("pipeline_page.html").render(
         version=app_version,
         mount=mount,
@@ -1943,21 +1985,35 @@ def render_pipeline_page(record: Any, compiled: str, runs: list[dict[str, Any]],
         nav=page_nav(mount, "pipelines"),
         title=spec.name or spec.id,
         spec=spec,
+        revision=record.revision,
+        arguments=arguments,
+        settings=json.dumps(spec.destination.settings, indent=2),
+        export=json.dumps(validation.export, indent=2) if validation and validation.export else None,
         created_at=record.created_at,
-        validation=record.validation,
+        automation_since=record.automation_since,
+        validation=validation,
         dry_run=record.dry_run,
         dry_run_passed=bool(record.dry_run and record.dry_run.passed),
+        approved=approved(record),
         source_schedule=next(
-            (c.message for c in (record.validation.checks if record.validation else []) if c.id == "schedule"),
+            (c.message for c in (validation.checks if validation else []) if c.id == "schedule"),
             "not checked yet",
         ),
         runs=runs,
-        period_type=period_type,
-        compiled=compiled,
+        skipped=record.events.skipped,
+        skipped_kept=_pipeline_skipped_kept(),
+        skipped_discarded=record.events.skipped_discarded,
+        skipped_discarded_through=record.events.skipped_discarded_through,
         range_start=range_start,
         range_end=range_end,
         read_only=api_config.is_read_only(),
     )
+
+
+def _pipeline_skipped_kept() -> int:
+    from open_climate_service.pipelines.runner import _SKIPPED_KEPT
+
+    return _SKIPPED_KEPT
 
 
 def _iso_day(period: str, *, first: bool) -> str:

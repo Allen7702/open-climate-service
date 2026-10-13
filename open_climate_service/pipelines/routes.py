@@ -10,13 +10,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import ValidationError
 
 from open_climate_service import config as api_config
-from open_climate_service.pipelines import service, store
+from open_climate_service.pipelines import forms, runner, service, store
 from open_climate_service.pipelines.schemas import PipelineRecord, PipelineSpec, ValidationResult
 from open_climate_service.shared.time import utc_now
 from open_climate_service.shared.urls import mount_prefix
 from open_climate_service.system.templates import wants_json
 
 router = APIRouter()
+
+_DEFAULT_WORKFLOW = "aggregate_by_features"
 
 
 def _require_writable() -> None:
@@ -36,44 +38,58 @@ def _json_request(request: Request) -> bool:
 
 
 def _public(record: PipelineRecord) -> dict[str, Any]:
-    period = record.validation.period_type if record.validation else None
-    return {**record.model_dump(mode="json"), "compiled": service.compile_pipeline(record.spec, period)}
+    return {**record.model_dump(mode="json"), "approved": service.approved(record)}
 
 
 def _failures(validation: ValidationResult) -> str:
     return "; ".join(f"{check.id}: {check.message}" for check in validation.checks if check.status == "fail")
 
 
-async def _body(request: Request) -> dict[str, Any]:
-    """A JSON body as is, or a form turned into the pipeline shape."""
+def _form_selection(choices: dict[str, Any], workflow_id: str | None, plugin_id: str | None) -> dict[str, Any]:
+    """The workflow and destination the form is for, with the fields each one asks for."""
+    workflows = {item["id"]: item for item in choices.get("workflows", [])}
+    destinations = {item["id"]: item for item in choices.get("destinations", [])}
+    workflow = (
+        workflows.get(workflow_id or "") or workflows.get(_DEFAULT_WORKFLOW) or next(iter(workflows.values()), None)
+    )
+    destination = destinations.get(plugin_id or "") or next(iter(destinations.values()), None)
+    return {
+        "workflow": workflow,
+        "destination": destination,
+        "parameter_fields": forms.parameter_fields(workflow["parameters"]) if workflow else [],
+        "settings_fields": forms.settings_fields(destination["schema"]) if destination else [],
+    }
+
+
+async def _body(request: Request) -> tuple[dict[str, Any], int | None]:
+    """A JSON body as is, or a form turned into the pipeline shape; with the revision it edits."""
     if _json_request(request):
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Pipeline body must be an object")
-        return body
+        revision = body.pop("revision", None)
+        return body, revision if isinstance(revision, int) and not isinstance(revision, bool) else None
     form = await request.form()
-    field = {key: str(value).strip() for key, value in form.items() if isinstance(value, str)}
-    series: dict[str, Any] = {"data_element": field.get("data_element", "")}
-    if field.get("variable"):
-        series["variable"] = field["variable"]
-    return {
-        "id": field.get("id", ""),
-        "name": field.get("name") or None,
-        "source": {"dataset": field.get("dataset", "")},
-        "destination": {
-            "connection": field.get("connection", ""),
-            "data_set": field.get("data_set") or None,
-            "organisation_units": {"feature_collection": field.get("feature_collection", "")},
-            "series": [series],
+    field = {key: str(value) for key, value in form.items() if isinstance(value, str)}
+    choices = service.choices()
+    selection = _form_selection(choices, field.get("workflow"), field.get("destination"))
+    workflow_id = field.get("workflow") or (selection["workflow"] or {}).get("id", "")
+    try:
+        arguments = forms.read_arguments(field, selection["parameter_fields"])
+        settings = forms.read_settings(field, selection["settings_fields"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    revision = field.get("revision", "").strip()
+    return (
+        {
+            "id": field.get("id", "").strip(),
+            "name": field.get("name", "").strip() or None,
+            "workflow": {"id": workflow_id, "arguments": arguments},
+            "destination": {"plugin": field.get("destination", ""), "settings": settings},
+            "delivery": {"mode": field.get("mode", "dry_run"), "policy": field.get("policy", "on_update")},
         },
-        "aggregation": {"spatial": {"reducer": field.get("reducer", "mean")}},
-        "delivery": {
-            "mode": field.get("mode", "dry_run"),
-            "policy": field.get("policy", "on_update"),
-            "release_cron": field.get("release_cron") or None,
-            "range": field.get("range", "updated"),
-        },
-    }
+        int(revision) if revision.isdigit() else None,
+    )
 
 
 def _render_page(
@@ -84,25 +100,40 @@ def _render_page(
     checks: ValidationResult | None = None,
     draft: dict[str, Any] | None = None,
     editing: str | None = None,
+    revision: int | None = None,
+    status_code: int | None = None,
 ) -> HTMLResponse:
     from open_climate_service.system.templates import render_pipelines_page
 
+    choices = service.choices() if tab == "create" else {}
+    draft = draft or {}
+    params = request.query_params
+    workflow_id = params.get("workflow") or (draft.get("workflow") or {}).get("id")
+    plugin_id = params.get("destination") or (draft.get("destination") or {}).get("plugin")
+    if params.get("workflow") and workflow_id != (draft.get("workflow") or {}).get("id"):
+        draft = {**draft, "workflow": {"id": workflow_id, "arguments": {}}}
+    if params.get("dataset") and not draft.get("workflow"):
+        draft = {**draft, "prefill_dataset": params["dataset"]}
     return HTMLResponse(
         render_pipelines_page(
             store.list_records(),
-            service.choices() if tab == "create" else {},
+            choices,
             mount_prefix(request),
             tab=tab,
             error=error,
             checks=checks,
             draft=draft,
             editing=editing,
+            revision=revision,
+            selection=_form_selection(choices, workflow_id, plugin_id) if tab == "create" else {},
         ),
-        status_code=400 if error else 200,
+        status_code=status_code or (400 if error else 200),
     )
 
 
-def _spec_from(body: dict[str, Any], request: Request, *, editing: str | None) -> PipelineSpec | HTMLResponse:
+def _spec_from(
+    body: dict[str, Any], request: Request, *, editing: str | None, revision: int | None
+) -> PipelineSpec | HTMLResponse:
     """Parse a spec, or the page that shows why it did not parse."""
     try:
         return PipelineSpec.model_validate(body)
@@ -110,7 +141,14 @@ def _spec_from(body: dict[str, Any], request: Request, *, editing: str | None) -
         message = "; ".join(f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors())
         if _json_request(request):
             raise HTTPException(status_code=422, detail=message) from exc
-        return _render_page(request, "create", error=message, draft=body, editing=editing)
+        return _render_page(request, "create", error=message, draft=body, editing=editing, revision=revision)
+
+
+def _done(request: Request, location: str, content: Any, status_code: int = 200, *, by_body: bool = False) -> Response:
+    """JSON for an API caller, a redirect for the page. ``by_body`` decides by the request body alone."""
+    if _json_request(request) or (not by_body and wants_json(request)):
+        return JSONResponse(status_code=status_code, content=content)
+    return RedirectResponse(f"{mount_prefix(request)}{location}", status_code=303)
 
 
 @router.get("", response_class=Response)
@@ -123,7 +161,7 @@ def pipelines(request: Request) -> Response:
 
 @router.get("/new", response_class=HTMLResponse, include_in_schema=False)
 def new_pipeline(request: Request) -> HTMLResponse:
-    """The pipeline creation tab."""
+    """The creation tab; ``?workflow=``, ``?destination=`` and ``?dataset=`` preselect its inputs."""
     return _render_page(request, "create")
 
 
@@ -131,8 +169,8 @@ def new_pipeline(request: Request) -> HTMLResponse:
 async def create_pipeline(request: Request) -> Response:
     """Save a new pipeline. It is validated first and refused when any check fails."""
     _require_writable()
-    body = await _body(request)
-    parsed = _spec_from(body, request, editing=None)
+    body, _ = await _body(request)
+    parsed = _spec_from(body, request, editing=None, revision=None)
     if isinstance(parsed, HTMLResponse):
         return parsed
     if store.get_record(parsed.id) is not None:
@@ -154,9 +192,7 @@ async def create_pipeline(request: Request) -> Response:
         if _json_request(request):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _render_page(request, "create", error=str(exc), draft=body)
-    if _json_request(request):
-        return JSONResponse(status_code=201, content=_public(record))
-    return RedirectResponse(f"{mount_prefix(request)}/pipelines/{record.spec.id}", status_code=303)
+    return _done(request, f"/pipelines/{record.spec.id}", _public(record), status_code=201, by_body=True)
 
 
 @router.get("/{pipeline_id}", response_class=Response)
@@ -164,67 +200,74 @@ def pipeline(request: Request, pipeline_id: str) -> Response:
     """Read one stored pipeline without revalidating it or changing its record."""
     record = _record_or_404(pipeline_id)
     if wants_json(request):
-        return JSONResponse({**_public(record), "runs": service.run_views(record)})
+        return JSONResponse({**_public(record), "runs": runner.run_views(record)})
     from open_climate_service.system.templates import render_pipeline_page
 
-    period = record.validation.period_type if record.validation else None
-    return HTMLResponse(
-        render_pipeline_page(
-            record, service.compiled_yaml(record.spec, period), service.run_views(record), mount_prefix(request)
-        )
-    )
+    return HTMLResponse(render_pipeline_page(record, runner.run_views(record), mount_prefix(request)))
 
 
 @router.get("/{pipeline_id}/edit", response_class=HTMLResponse, include_in_schema=False)
 def edit_pipeline(request: Request, pipeline_id: str) -> HTMLResponse:
     """The create form, prefilled with a stored pipeline."""
     record = _record_or_404(pipeline_id)
-    return _render_page(request, "create", draft=record.spec.model_dump(mode="json"), editing=pipeline_id)
+    return _render_page(
+        request, "create", draft=record.spec.model_dump(mode="json"), editing=pipeline_id, revision=record.revision
+    )
 
 
 @router.post("/{pipeline_id}", response_class=Response)
 async def save_pipeline(request: Request, pipeline_id: str) -> Response:
-    """Save an edited pipeline. Validated first; a change that fails any check is refused."""
+    """Save an edited pipeline. Validated first; a change that fails any check, or a stale edit, is refused."""
     _require_writable()
     record = _record_or_404(pipeline_id)
-    body = await _body(request)
+    body, revision = await _body(request)
     body["id"] = pipeline_id
-    parsed = _spec_from(body, request, editing=pipeline_id)
+    parsed = _spec_from(body, request, editing=pipeline_id, revision=revision)
     if isinstance(parsed, HTMLResponse):
         return parsed
     candidate = record.model_copy(deep=True)
-    changed = parsed != record.spec
     candidate.spec = parsed
-    if changed:
-        # The bindings a dry run was judged on no longer hold; runs stay as history.
-        candidate.dry_run = None
-    candidate.validation = service.validate_pipeline(candidate)
-    if not candidate.validation.valid:
+    validation = service.validate_pipeline(candidate)
+    if not validation.valid:
         if _json_request(request):
             raise HTTPException(
                 status_code=422,
-                detail={
-                    "message": "Pipeline validation failed",
-                    "checks": candidate.validation.model_dump(mode="json"),
-                },
+                detail={"message": "Pipeline validation failed", "checks": validation.model_dump(mode="json")},
             )
         return _render_page(
             request,
             "create",
             error="The changes were not saved",
-            checks=candidate.validation,
+            checks=validation,
             draft=body,
             editing=pipeline_id,
+            revision=revision,
         )
-    store.save_record(candidate)
-    if _json_request(request):
-        return JSONResponse(_public(candidate))
-    return RedirectResponse(f"{mount_prefix(request)}/pipelines/{pipeline_id}", status_code=303)
+
+    def _apply(current: PipelineRecord) -> None:
+        judged = current.revision if revision is None else revision
+        # The validation judged `parsed` itself; it becomes the verdict on the revision `parsed` creates.
+        store.replace_spec(current, parsed, expected_revision=judged)
+        current.validation = validation.model_copy(update={"revision": current.revision})
+        # The approval names the bindings it judged; it lapses by itself when they change,
+        # and is dropped so the page does not show a dry run for something else.
+        if current.dry_run is not None and current.dry_run.bindings != validation.bindings:
+            current.dry_run = None
+
+    try:
+        saved, _ = store.update_record(pipeline_id, _apply)
+    except store.StaleRevision as exc:
+        if _json_request(request):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _render_page(request, "create", error=str(exc), draft=body, editing=pipeline_id, status_code=409)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _done(request, f"/pipelines/{pipeline_id}", _public(saved), by_body=True)
 
 
 @router.delete("/{pipeline_id}", status_code=204)
 def delete_pipeline(pipeline_id: str) -> Response:
-    """Remove a stored pipeline. Configuration already merged into the instance file is untouched."""
+    """Remove a stored pipeline and its run history. Jobs and deliveries already made are kept."""
     _require_writable()
     _record_or_404(pipeline_id)
     store.delete_record(pipeline_id)
@@ -245,14 +288,19 @@ async def delete_pipeline_form(request: Request, pipeline_id: str) -> Response:
 
 @router.post("/{pipeline_id}/validate", response_class=Response)
 async def validate_pipeline(request: Request, pipeline_id: str) -> Response:
-    """Re-check every binding the pipeline relies on, in OCS and in DHIS2, and keep the result."""
+    """Re-check every binding the pipeline relies on, in OCS and at its destination, and keep the result."""
     _require_writable()
     record = _record_or_404(pipeline_id)
-    record.validation = service.validate_pipeline(record)
-    store.save_record(record)
-    if wants_json(request) or _json_request(request):
-        return JSONResponse(record.validation.model_dump(mode="json"))
-    return RedirectResponse(f"{mount_prefix(request)}/pipelines/{pipeline_id}#validation", status_code=303)
+    validation = service.validate_pipeline(record)
+
+    def _apply(current: PipelineRecord) -> None:
+        store.install_validation(current, validation, judged_revision=record.revision)
+
+    try:
+        store.update_record(pipeline_id, _apply)
+    except store.StaleRevision as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _done(request, f"/pipelines/{pipeline_id}#validation", validation.model_dump(mode="json"))
 
 
 async def _range(request: Request) -> tuple[str, str, dict[str, Any]]:
@@ -270,67 +318,144 @@ async def _range(request: Request) -> tuple[str, str, dict[str, Any]]:
 
 @router.post("/{pipeline_id}/dry-run", response_class=Response)
 async def dry_run_pipeline(request: Request, pipeline_id: str) -> Response:
-    """Aggregate a bounded range and submit it to DHIS2 as a dry run; nothing is stored there."""
+    """Run the workflow over a bounded range and dry-run the result at the destination; nothing is stored there."""
     _require_writable()
     record = _record_or_404(pipeline_id)
     start, end, _ = await _range(request)
-    record.dry_run = service.dry_run_pipeline(record, start, end)
-    store.save_record(record)
-    if wants_json(request) or _json_request(request):
-        return JSONResponse(json.loads(record.dry_run.model_dump_json()))
-    return RedirectResponse(f"{mount_prefix(request)}/pipelines/{pipeline_id}#dry-run", status_code=303)
+    result = service.dry_run_pipeline(record, start, end)
 
+    def _apply(current: PipelineRecord) -> None:
+        if current.revision != record.revision:
+            raise store.StaleRevision(f"pipeline '{pipeline_id}' changed during the dry run; run it again")
+        current.dry_run = result
 
-@router.post("/{pipeline_id}/runs", response_class=Response)
-async def run_pipeline(request: Request, pipeline_id: str) -> Response:
-    """Run once: a batch job over the range through the pipeline's export, delivered when it finishes."""
-    _require_writable()
-    record = _record_or_404(pipeline_id)
-    start, end, body = await _range(request)
-    mode = str(body.get("mode", "dry_run"))
     try:
-        run = service.start_run(record, start, end, mode)
-    except ValueError as exc:
+        store.update_record(pipeline_id, _apply)
+    except store.StaleRevision as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    store.save_record(record)
-    if wants_json(request) or _json_request(request):
-        return JSONResponse(status_code=202, content=run.model_dump(mode="json"))
-    return RedirectResponse(f"{mount_prefix(request)}/pipelines/{pipeline_id}#runs", status_code=303)
+    return _done(request, f"/pipelines/{pipeline_id}#dry-run", json.loads(result.model_dump_json()))
 
 
-@router.post("/{pipeline_id}/runs/{job_id}/deliver", response_class=Response)
-def deliver_pipeline_run(request: Request, pipeline_id: str, job_id: str) -> Response:
-    """Submit the delivery a finished run still owes, when the automatic hand-off did not."""
-    _require_writable()
-    record = _record_or_404(pipeline_id)
+def _start(pipeline_id: str, context: runner.RunContext) -> Any:
     try:
-        run = service.deliver_run(record, job_id)
+        return runner.run_pipeline(pipeline_id, context)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    finally:
-        store.save_record(record)
-    if wants_json(request) or _json_request(request):
-        return JSONResponse(run.model_dump(mode="json"))
-    return RedirectResponse(f"{mount_prefix(request)}/pipelines/{pipeline_id}#runs", status_code=303)
+
+
+@router.post("/{pipeline_id}/runs", response_class=Response)
+async def run_pipeline(request: Request, pipeline_id: str) -> Response:
+    """Run once over an explicit range: a batch job of the workflow, delivered when it finishes."""
+    _require_writable()
+    _record_or_404(pipeline_id)
+    start, end, body = await _range(request)
+    mode = str(body.get("mode", "dry_run"))
+    if mode not in ("dry_run", "live"):
+        raise HTTPException(status_code=400, detail="mode must be dry_run or live")
+    run = _start(pipeline_id, runner.RunContext(start=start, end=end, mode="live" if mode == "live" else "dry_run"))
+    return _done(request, f"/pipelines/{pipeline_id}#runs", run.model_dump(mode="json", exclude={"process"}), 202)
+
+
+@router.post("/{pipeline_id}/runs/{run_id}/retry", response_class=Response)
+def retry_pipeline_run(request: Request, pipeline_id: str, run_id: str) -> Response:
+    """Run a failed or unwanted run's interval again, in the same mode, as a new run."""
+    _require_writable()
+    record = _record_or_404(pipeline_id)
+    previous = next((item for item in record.runs if run_id in (item.run_id, item.job_id)), None)
+    if previous is None:
+        raise HTTPException(status_code=404, detail=f"pipeline '{pipeline_id}' has no run '{run_id}'")
+    context = runner.RunContext(
+        start=previous.start, end=previous.end, trigger="retry", mode=previous.mode, retry_of=previous.run_id
+    )
+    run = _start(pipeline_id, context)
+    return _done(request, f"/pipelines/{pipeline_id}#runs", run.model_dump(mode="json", exclude={"process"}), 202)
+
+
+@router.post("/{pipeline_id}/runs/{run_id}/deliver", response_class=Response)
+def deliver_pipeline_run(request: Request, pipeline_id: str, run_id: str) -> Response:
+    """Submit the delivery a finished run still owes: a missed hand-off, a held one or a failed one."""
+    _require_writable()
+    _record_or_404(pipeline_id)
+    try:
+        run = runner.deliver_run(pipeline_id, run_id, operator=True)
+    except HTTPException:
+        raise
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        # A transient failure while handing off; the run records it and nothing was sent twice.
+        raise HTTPException(status_code=503, detail=f"Delivery could not be submitted now; try again: {exc}") from exc
+    return _done(request, f"/pipelines/{pipeline_id}#runs", run.model_dump(mode="json", exclude={"process"}))
+
+
+@router.post("/{pipeline_id}/runs/{run_id}/redeliver", response_class=Response)
+def redeliver_pipeline_run(request: Request, pipeline_id: str, run_id: str) -> Response:
+    """Send a run again whose delivery job failed at the destination, as a new delivery."""
+    _require_writable()
+    _record_or_404(pipeline_id)
+    try:
+        run = runner.deliver_run(pipeline_id, run_id, operator=True, redeliver=True)
+    except HTTPException:
+        raise
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        # A transient failure while handing off; the run records it and nothing was sent twice.
+        raise HTTPException(status_code=503, detail=f"Delivery could not be submitted now; try again: {exc}") from exc
+    return _done(request, f"/pipelines/{pipeline_id}#runs", run.model_dump(mode="json", exclude={"process"}))
+
+
+@router.post("/{pipeline_id}/runs/{run_id}/acknowledge", response_class=Response)
+def acknowledge_pipeline_delivery(request: Request, pipeline_id: str, run_id: str) -> Response:
+    """Record that the destination was checked and an unconfirmed delivery is settled; nothing is sent."""
+    _require_writable()
+    _record_or_404(pipeline_id)
+    try:
+        run = runner.acknowledge_delivery(pipeline_id, run_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _done(request, f"/pipelines/{pipeline_id}#runs", run.model_dump(mode="json", exclude={"process"}))
 
 
 @router.post("/{pipeline_id}/mode/{mode}", response_class=Response)
 def set_delivery_mode(request: Request, pipeline_id: str, mode: Literal["dry_run", "live", "paused"]) -> Response:
-    """Switch delivery between dry run, live and paused; live needs a passed dry run."""
+    """Switch delivery between dry run, live and paused.
+
+    Going live re-runs every check, the destination's included, and needs a dry run that
+    passed for the bindings being validated.
+    """
     _require_writable()
     record = _record_or_404(pipeline_id)
-    if mode == "live" and (record.dry_run is None or not record.dry_run.passed):
-        raise HTTPException(status_code=409, detail="Live delivery requires a successful dry run")
     candidate = record.model_copy(deep=True)
     candidate.spec = candidate.spec.model_copy(
         update={"delivery": candidate.spec.delivery.model_copy(update={"mode": mode})}
     )
-    candidate.validation = service.validate_pipeline(candidate)
-    if not candidate.validation.valid:
-        raise HTTPException(status_code=409, detail=f"Pipeline validation failed: {_failures(candidate.validation)}")
-    store.save_record(candidate)
-    if wants_json(request) or _json_request(request):
-        return JSONResponse(_public(candidate))
-    return RedirectResponse(f"{mount_prefix(request)}/pipelines/{pipeline_id}#config", status_code=303)
+    validation = service.validate_pipeline(candidate)
+    if not validation.valid:
+        raise HTTPException(status_code=409, detail=f"Pipeline validation failed: {_failures(validation)}")
+    if mode == "live" and not (candidate.dry_run and candidate.dry_run.bindings == validation.bindings):
+        raise HTTPException(
+            status_code=409, detail="Live delivery requires a successful dry run of the current bindings"
+        )
+
+    def _apply(current: PipelineRecord) -> None:
+        store.replace_spec(current, candidate.spec, expected_revision=record.revision)
+        current.validation = validation.model_copy(update={"revision": current.revision})
+
+    try:
+        saved, _ = store.update_record(pipeline_id, _apply)
+    except store.StaleRevision as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if mode != "paused":
+        # Resuming, or going live, releases the held deliveries that are eligible now.
+        runner.release_held(pipeline_id)
+        saved = store.get_record(pipeline_id) or saved
+    return _done(request, f"/pipelines/{pipeline_id}#delivery", _public(saved))

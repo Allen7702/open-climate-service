@@ -292,6 +292,9 @@
               <div class="actions">
                 {% if published and not vector %}
                 <a class="button-link primary" href="{{ mount }}/map?dataset={{ dataset.id | urlencode }}">Open in map viewer</a>
+                {% if not read_only %}
+                <a class="button-link" href="{{ mount }}/pipelines/new?dataset={{ dataset.id | urlencode }}">Create pipeline</a>
+                {% endif %}
                 {% endif %}
                 {% for link in links %}
                 <a class="button-link" href="{{ mount }}{{ link.href }}">{{ link.title }}</a>

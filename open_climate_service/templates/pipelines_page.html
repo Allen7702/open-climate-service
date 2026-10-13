@@ -25,7 +25,7 @@
           <h2 id="pipelines-title" tabindex="-1">Pipelines</h2>
           <span class="chip">{{ pipelines | length }} configured</span>
         </div>
-        <p class="lead">Connect a managed climate dataset to DHIS2, validate every binding, then test the delivery before enabling it.</p>
+        <p class="lead">A pipeline runs one reusable workflow over its bound inputs and delivers the result to a destination: validated first, dry-run, then live.</p>
 
         <nav class="page-tabs" aria-label="Pipeline views">
           <a href="{{ mount }}/pipelines" {% if tab == 'list' %}aria-current="page"{% endif %}>Configured pipelines</a>
@@ -38,17 +38,18 @@
         <div class="panel table-wrap pipeline-table">
           <table>
             <thead>
-              <tr><th>Pipeline</th><th>Dataset</th><th>Organisation units</th><th>Data element</th><th>Validation</th><th>Dry run</th></tr>
+              <tr><th>Pipeline</th><th>Workflow</th><th>Destination</th><th>Delivery</th><th>Validation</th><th>Dry run</th><th>Last run</th></tr>
             </thead>
             <tbody>
               {% for p in pipelines %}
               <tr>
                 <td><a href="{{ mount }}/pipelines/{{ p.id }}">{{ p.title }}</a></td>
-                <td>{{ p.dataset }}</td>
-                <td>{{ p.collection }}</td>
-                <td class="mono">{{ p.element }}</td>
+                <td class="mono">{{ p.workflow }}</td>
+                <td class="mono">{{ p.destination }}</td>
+                <td><span class="chip">{{ p.mode | replace('_', ' ') }}</span> <span class="note">{{ 'on update' if p.policy == 'on_update' else 'manual' }}</span></td>
                 <td>{% if p.validation %}<span class="chip {{ 'chip-published' if p.validation == 'valid' else 'chip-unpublished' }}">{{ p.validation }}</span>{% else %}<span class="note">not yet</span>{% endif %}</td>
-                <td>{% if p.dry_run %}<span class="chip {{ 'chip-published' if p.dry_run == 'passed' else 'chip-unpublished' }}">{{ p.dry_run }}</span>{% else %}<span class="note">not yet</span>{% endif %}</td>
+                <td>{% if p.dry_run %}<span class="chip {{ 'chip-published' if p.dry_run == 'approved' else 'chip-unpublished' }}">{{ p.dry_run }}</span>{% else %}<span class="note">not yet</span>{% endif %}</td>
+                <td>{% if p.last_run %}{{ p.last_run.start }} to {{ p.last_run.end }} <span class="note">{{ p.last_run.trigger | replace('_', ' ') }}</span>{% else %}<span class="note">none</span>{% endif %}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -57,7 +58,7 @@
         {% else %}
         <div class="panel empty-state">
           <h3>No pipelines yet</h3>
-          <p class="note">Create the first dataset-to-DHIS2 delivery when its source and destination are ready.</p>
+          <p class="note">Create one from a dataset's page, or here, when its inputs and destination are ready.</p>
           <a class="button-link primary empty-state-action" href="{{ mount }}/pipelines/new">Create pipeline</a>
         </div>
         {% endif %}
@@ -66,7 +67,7 @@
         {% if tab == 'create' %}
         <section class="panel pipeline-create" aria-labelledby="create-title">
           <h3 id="create-title">{% if editing %}Edit pipeline{% else %}New pipeline{% endif %}</h3>
-          <p class="note">Saving validates every binding, in OCS and in DHIS2, and refuses the pipeline when a check fails. A saved pipeline schedules nothing and sends nothing until it is dry-run and activated.</p>
+          <p class="note">Saving validates the workflow binding, the inputs and the destination, and refuses the pipeline when a check fails. A new pipeline starts in dry-run mode and sends nothing a destination stores.</p>
           {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
           {% if checks %}
           <ul class="plain-list validation-list">
@@ -75,17 +76,38 @@
             {% endfor %}
           </ul>
           {% endif %}
-          {% if not datasets %}
-          <p class="note">No published dataset has a cadence DHIS2 can take as is (daily, weekly, monthly or yearly). Ingest one first.</p>
-          {% endif %}
+          {% if not workflows %}
+          <p class="note">No registered workflow can run in a pipeline: it needs a temporal-interval parameter and must return data rather than save it.</p>
+          {% elif not destinations %}
+          <p class="note">No export plugin is a pipeline destination.</p>
+          {% else %}
+          <form method="get" action="{{ mount }}/pipelines/{% if editing %}{{ editing }}/edit{% else %}new{% endif %}" class="form-grid pipeline-select">
+            <div class="field field-wide">
+              <label for="p-workflow">Workflow</label>
+              <select id="p-workflow" name="workflow">
+                {% for w in workflows %}<option value="{{ w.id }}" {% if workflow and workflow.id == w.id %}selected{% endif %}>{{ w.id }}: {{ w.summary }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label for="p-destination-plugin">Destination</label>
+              <select id="p-destination-plugin" name="destination">
+                {% for d in destinations %}<option value="{{ d.id }}" {% if destination and destination.id == d.id %}selected{% endif %}>{{ d.id }} ({{ d.format }})</option>{% endfor %}
+              </select>
+            </div>
+            <div class="form-actions"><button type="submit">Use these</button><span class="note">Changing the workflow or destination reloads their fields.</span></div>
+          </form>
+
           <form method="post" action="{{ mount }}/pipelines{% if editing %}/{{ editing }}{% endif %}" class="pipeline-form">
+            <input type="hidden" name="workflow" value="{{ workflow.id }}" />
+            <input type="hidden" name="destination" value="{{ destination.id }}" />
+            {% if editing %}<input type="hidden" name="revision" value="{{ revision or '' }}" />{% endif %}
             <fieldset class="form-section">
               <legend><span>1</span> Identify the pipeline</legend>
               <div class="form-grid">
                 <div class="field">
                   <label for="p-id">Id</label>
-                  <input type="text" id="p-id" name="id" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" value="{{ draft.id or editing or '' }}" {% if editing %}readonly{% endif %} />
-                  <span class="hint">Letters, digits, dots, underscores or hyphens. Becomes the export and trigger id.</span>
+                  <input type="text" id="p-id" name="id" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*" value="{{ draft.id or editing or '' }}" {% if editing %}readonly{% endif %} />
+                  <span class="hint">Letters, digits, underscores or hyphens. Also the id of the export its results are saved through.</span>
                 </div>
                 <div class="field">
                   <label for="p-name">Name</label>
@@ -95,93 +117,102 @@
             </fieldset>
 
             <fieldset class="form-section">
-              <legend><span>2</span> Choose source and transformation</legend>
+              <legend><span>2</span> Bind the workflow's inputs</legend>
+              <p class="hint">{{ workflow.summary }}</p>
               <div class="form-grid">
-                <div class="field field-wide">
-                  <label for="p-dataset">Dataset</label>
-                  <select id="p-dataset" name="dataset" required>
-                    {% for d in datasets %}
-                    <option value="{{ d.id }}" {% if draft.source and draft.source.dataset == d.id %}selected{% endif %}>{{ d.name }} ({{ d.cadence }}, {{ d.coverage.start }} to {{ d.coverage.end }})</option>
-                    {% endfor %}
+                {% for f in parameter_fields %}
+                <div class="field {% if f.kind in ['dataset', 'features', 'json'] %}field-wide{% endif %}">
+                  <label for="arg-{{ f.name }}">{{ f.name }}{% if not f.required and f.kind != 'interval' %} <span class="note">optional</span>{% endif %}</label>
+                  {% if f.kind == 'interval' %}
+                  <input type="text" id="arg-{{ f.name }}" name="arg.{{ f.name }}" value="{{ f.value }}" placeholder="Supplied by each run" />
+                  <span class="hint">Leave empty: each run gives its own interval. Bind it as JSON only when the workflow has another interval for runs.</span>
+                  {% elif f.kind == 'dataset' %}
+                  <select id="arg-{{ f.name }}" name="arg.{{ f.name }}" {% if f.required %}required{% endif %}>
+                    {% if not f.required %}<option value="">(not bound)</option>{% endif %}
+                    {% for d in datasets %}<option value="{{ d.id }}" {% if f.value == d.id %}selected{% endif %}>{{ d.name }} ({{ d.cadence }}, {{ d.coverage.start }} to {{ d.coverage.end }})</option>{% endfor %}
                   </select>
-                  <span class="hint">Its cadence becomes the DHIS2 period. Temporal resampling belongs in the source workflow.</span>
-                </div>
-                <div class="field field-wide">
-                  <label for="p-collection">Organisation units</label>
-                  <select id="p-collection" name="feature_collection" required>
-                    {% for c in collections %}
-                    <option value="{{ c.id }}" {% if draft.destination and draft.destination.organisation_units.feature_collection == c.id %}selected{% endif %}>{{ c.name }} ({{ c.feature_count }} polygons{% if c.level %}, level {{ c.level }}{% endif %}{% if c.connection %}, {{ c.connection }}{% endif %})</option>
-                    {% endfor %}
+                  {% elif f.kind == 'features' %}
+                  <select id="arg-{{ f.name }}" name="arg.{{ f.name }}" {% if f.required %}required{% endif %}>
+                    {% if not f.required %}<option value="">(not bound)</option>{% endif %}
+                    {% for c in collections %}<option value="{{ c.id }}" {% if f.value == c.id %}selected{% endif %}>{{ c.name }} ({{ c.feature_count }} features, {{ c.geometry_types | join(', ') }})</option>{% endfor %}
                   </select>
-                  <span class="hint">Its feature ids become the DHIS2 organisation unit ids.</span>
-                </div>
-                <div class="field">
-                  <label for="p-reducer">Spatial reducer</label>
-                  <select id="p-reducer" name="reducer">
-                    {% for r in reducers %}<option value="{{ r }}" {% if draft.aggregation and draft.aggregation.spatial.reducer == r %}selected{% endif %}>{{ r }}</option>{% endfor %}
+                  {% elif f.kind == 'enum' %}
+                  <select id="arg-{{ f.name }}" name="arg.{{ f.name }}">
+                    {% if not f.required %}<option value="">default{% if f.default is not none %} ({{ f.default }}){% endif %}</option>{% endif %}
+                    {% for option in f.enum %}<option value="{{ option }}" {% if f.value == option | string %}selected{% endif %}>{{ option }}</option>{% endfor %}
                   </select>
+                  {% elif f.kind == 'json' %}
+                  <textarea id="arg-{{ f.name }}" name="arg.{{ f.name }}" rows="3" class="mono" placeholder="JSON">{{ f.value }}</textarea>
+                  {% else %}
+                  <input type="text" id="arg-{{ f.name }}" name="arg.{{ f.name }}" value="{{ f.value }}" {% if f.required %}required{% endif %} {% if f.default is not none %}placeholder="{{ f.default }}"{% endif %} />
+                  {% endif %}
+                  {% if f.description and f.kind != 'interval' %}<span class="hint">{{ f.description }}</span>{% endif %}
                 </div>
-                <div class="field">
-                  <label for="p-variable">Variable</label>
-                  <input type="text" id="p-variable" name="variable" placeholder="Dataset's default variable" value="{{ draft.destination.series[0].variable or '' if draft.destination and draft.destination.series else '' }}" />
-                </div>
+                {% endfor %}
               </div>
             </fieldset>
 
             <fieldset class="form-section">
-              <legend><span>3</span> Map the DHIS2 destination</legend>
+              <legend><span>3</span> Configure the {{ destination.id }} destination</legend>
               <div class="form-grid">
-                <div class="field">
-                  <label for="p-connection">DHIS2 connection</label>
-                  <select id="p-connection" name="connection" required>
-                    {% for c in connections %}<option value="{{ c }}" {% if draft.destination and draft.destination.connection == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+                {% for f in settings_fields %}
+                {% if f.kind == 'rows' %}
+                <div class="field field-wide">
+                  <strong>{{ f.title }}</strong>
+                  {% for row in f.rows %}
+                  {% set i = loop.index0 %}
+                  <div class="form-grid">
+                    {% for c in f.columns %}
+                    <div class="field">
+                      <label for="dest-{{ f.name }}-{{ i }}-{{ c.name }}">{{ c.title }}{% if not c.required %} <span class="note">optional</span>{% endif %}</label>
+                      <input type="text" id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}" value="{{ row.get(c.name) or '' }}" />
+                    </div>
+                    {% endfor %}
+                  </div>
+                  {% endfor %}
+                  <span class="hint">{{ f.description }} Fill the empty row to add one; save to get another.</span>
+                </div>
+                {% else %}
+                <div class="field {% if f.kind == 'json' %}field-wide{% endif %}">
+                  <label for="dest-{{ f.name }}">{{ f.title }}{% if not f.required %} <span class="note">optional</span>{% endif %}</label>
+                  {% if f.enum %}
+                  <select id="dest-{{ f.name }}" name="dest.{{ f.name }}" {% if f.required %}required{% endif %}>
+                    {% for option in f.enum %}<option value="{{ option }}" {% if f.value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
                   </select>
+                  {% elif f.kind == 'json' %}
+                  <textarea id="dest-{{ f.name }}" name="dest.{{ f.name }}" rows="3" class="mono" placeholder="JSON">{{ f.value }}</textarea>
+                  {% else %}
+                  <input type="text" id="dest-{{ f.name }}" name="dest.{{ f.name }}" value="{{ f.value }}" {% if f.required %}required{% endif %} />
+                  {% endif %}
+                  {% if f.description %}<span class="hint">{{ f.description }}</span>{% endif %}
                 </div>
-                <div class="field">
-                  <label for="p-data-set">DHIS2 data set</label>
-                  <input type="text" id="p-data-set" name="data_set" placeholder="UID, optional" value="{{ draft.destination.data_set or '' if draft.destination else '' }}" />
-                  <span class="hint">Used to check period type and organisation unit assignment.</span>
-                </div>
-                <div class="field">
-                  <label for="p-data-element">DHIS2 data element</label>
-                  <input type="text" id="p-data-element" name="data_element" required placeholder="UID" value="{{ draft.destination.series[0].data_element if draft.destination and draft.destination.series else '' }}" />
-                </div>
+                {% endif %}
+                {% endfor %}
               </div>
             </fieldset>
 
             <fieldset class="form-section">
-              <legend><span>4</span> Decide when values go out</legend>
-              <p class="hint">The pipeline never fetches data. Keeping the dataset current is its sync schedule, managed with the instance's schedules; the pipeline reacts to updates.</p>
+              <legend><span>4</span> Decide when it runs</legend>
+              <p class="hint">The pipeline never fetches data. Keeping a source dataset current is its sync schedule; the pipeline reacts to its updates.</p>
               <div class="form-grid">
                 <div class="field">
-                  <label for="p-policy">Deliver</label>
+                  <label for="p-policy">Run</label>
                   <select id="p-policy" name="policy">
-                    <option value="on_update" {% if not draft.delivery or draft.delivery.policy in [none, 'on_update'] %}selected{% endif %}>After each dataset update</option>
-                    <option value="manual" {% if draft.delivery and draft.delivery.policy == 'manual' %}selected{% endif %}>Only when run or delivered by hand</option>
-                    <option value="scheduled" {% if draft.delivery and draft.delivery.policy == 'scheduled' %}selected{% endif %}>At a release time (accepted, not applied yet)</option>
+                    <option value="on_update" {% if not draft.delivery or draft.delivery.policy in [none, 'on_update'] %}selected{% endif %}>After each source dataset update</option>
+                    <option value="manual" {% if draft.delivery and draft.delivery.policy == 'manual' %}selected{% endif %}>Only when run by hand</option>
                   </select>
-                </div>
-                <div class="field">
-                  <label for="p-release">Release time</label>
-                  <input type="text" id="p-release" name="release_cron" placeholder="0 2 5 * *" value="{{ draft.delivery.release_cron or '' if draft.delivery else '' }}" />
-                  <span class="hint">Five-field cron, only for a scheduled release.</span>
-                </div>
-                <div class="field">
-                  <label for="p-range">Values</label>
-                  <select id="p-range" name="range">
-                    <option value="updated" {% if not draft.delivery or draft.delivery.range != 'all' %}selected{% endif %}>Only the updated interval</option>
-                    <option value="all" {% if draft.delivery and draft.delivery.range == 'all' %}selected{% endif %}>Complete history on every update</option>
-                  </select>
+                  <span class="hint">A run after an update covers the updated interval. A scheduled release is not available yet.</span>
                 </div>
               </div>
             </fieldset>
             {% if editing %}<input type="hidden" name="mode" value="{{ draft.delivery.mode if draft.delivery else 'dry_run' }}" />{% endif %}
             <div class="form-actions">
               <button type="submit" class="primary">Save</button>
-              <span class="note">{% if editing %}A change to the bindings clears the last dry run.{% else %}The new pipeline starts in safe, dry-run mode.{% endif %}</span>
+              <span class="note">{% if editing %}A change to the workflow, its arguments or the destination needs a new dry run before live delivery.{% else %}The new pipeline starts in dry-run mode.{% endif %}</span>
               {% if editing %}<a class="button-link" href="{{ mount }}/pipelines/{{ editing }}">Cancel</a>{% endif %}
             </div>
           </form>
+          {% endif %}
         </section>
         {% endif %}
       </main>
