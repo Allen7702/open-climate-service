@@ -209,6 +209,31 @@ are a dot followed by lowercase letters or digits; Zarr directories are excluded
 Media types use `type/subtype` without parameters. Plugin code is operator-installed
 Python code and must be trusted by the deployment.
 
+## Act as a pipeline destination
+
+A [pipeline](web_interface.md#the-pipeline-pages-pipelines) delivers through an export
+plugin, and never interprets the destination's settings itself. A plugin becomes a pipeline
+destination by overriding these optional hooks of `BaseExportPlugin`:
+
+| Hook | Purpose |
+|---|---|
+| `destination_settings_schema()` | JSON Schema of the settings; drives the pipeline form. Returning `None` (the default) means "not a destination". |
+| `export_definition(settings, context)` | Compile the settings into an export definition (mapping plus `dataset`/`connection` references), resolved like a configured named export. Pure; raise `ValueError` for bad settings. |
+| `check_destination(settings, context)` | Destination-side checks run on save, re-check and going live, returned as `DestinationCheck`s. May contact the destination. |
+| `preview(content, limit)` | A few rendered records for the dry-run summary. |
+| `target_binding(references)` | Credential-free identity of the target the export's references name. Recorded in each saved export's manifest and compared before delivery, so a moved target is refused. Default: the `connection` reference as a named instance connection, `{connection_id, url_sha256}`. |
+| `delivery_target(binding)` | What `send` receives for that binding, for both a delivery and a pipeline dry run. Default: the named connection's id. |
+| `redelivery_safe` | `True` when sending the same payload twice leaves the destination as sending it once (an upsert). Only then may an operator send a pipeline delivery again after an unconfirmed outcome. DHIS2 sets it. |
+| `supports_dry_run` | `True` when `send(dry_run=True)` has the destination validate without storing. Without it a pipeline dry run only renders. |
+
+The target hooks apply to every delivery, not only pipelines. The defaults keep the contract
+existing delivery plugins rely on, including DHIS2: `send` receives a named connection's id. A
+plugin delivering anywhere else, a database or a file store, overrides both hooks.
+
+`context` is a `DestinationContext`: the pipeline's export id, the datasets its workflow binds
+(id, variable, cadence) and the feature collections it binds. The built-in DHIS2 plugin
+implements all of them in `open_climate_service/exports/dhis2_destination.py`.
+
 ## Saved results and delivery eligibility
 
 Each batch render writes a fresh payload generation and a versioned JSON manifest,

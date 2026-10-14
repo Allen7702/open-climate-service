@@ -304,6 +304,11 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
+def triggered_job_id(source_event_id: str, trigger_id: str) -> str:
+    """The deterministic id of the one job a durable event and trigger may create."""
+    return str(uuid5(NAMESPACE_URL, f"ocs:{source_event_id}:{trigger_id}"))
+
+
 class OpenEOJobService:
     """Manages openEO job lifecycle and asynchronous execution."""
 
@@ -512,7 +517,7 @@ class OpenEOJobService:
             )
         if not isinstance(body.process.get("process_graph"), dict):
             raise ValueError("process.process_graph must be an object")
-        job_id = str(uuid5(NAMESPACE_URL, f"ocs:{source_event_id}:{trigger_id}"))
+        job_id = triggered_job_id(source_event_id, trigger_id)
         now = utc_now()
         candidate = OpenEOJobRecord(
             id=job_id,
