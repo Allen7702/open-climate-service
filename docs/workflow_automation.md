@@ -35,7 +35,8 @@ exact event references can be used at any nesting level:
 
 - `$event.dataset_id`
 - `$event.artifact_id`
-- `$event.action`: `ingest` for an ingestion, or the sync planner's `append` or `rematerialize`
+- `$event.action`: `ingest` for an ingestion, the sync planner's `append` or `rematerialize`, or
+  `full_rewrite` for a managed dataset an openEO job published
 - `$event.previous_end`: the coverage end before the update, or `null` when the whole store is new
   or rewritten
 - `$event.current_start`: the coverage start after the update
@@ -50,6 +51,28 @@ period was rewritten. After an append, `previous_end` is the old coverage bounda
 interval includes the boundary and the newly appended periods. A workflow that always needs an
 explicit, non-null start can use `$event.current_start`, the start of the complete coverage after
 the update.
+
+**A trigger that publishes a managed dataset must compute its full range.** A workflow that ends in
+`save_result` with an `output_dataset_id` replaces that whole store on every run. Over
+`[$event.previous_end, $event.current_end]` it would compute only the newly appended periods and
+drop the rest of the published history, so OCS refuses a rewrite that would start later or end
+earlier than the published dataset (the job fails without committing, and nothing downstream
+runs). Bind such a trigger to the complete coverage instead:
+
+```yaml
+    - id: chirps-anomaly
+      on_update_of: chirps3_precipitation_monthly
+      workflow_id: climate_anomaly
+      arguments:
+        observed_dataset_id: $event.dataset_id
+        normal_dataset_id: chirps3_precipitation_monthly_normal_1991_2020
+        output_dataset_id: chirps3_precipitation_monthly_anomaly
+        variable: precip
+        temporal_extent: [$event.current_start, $event.current_end]
+```
+
+Appending to a derived dataset, which would let it compute only the new periods, is not
+supported yet.
 
 The workflow definition remains reusable and deployment-independent. Operational bindings such
 as output dataset IDs, geometries, and DHIS2 identifiers remain in instance configuration.
@@ -119,7 +142,10 @@ pipeline on a derived dataset needs nothing special.
   the job did not ask to publish. An unpublished output is stored and registered without one.
 - **It describes a full rewrite.** The managed writer replaces the whole store, so the event's
   `action` is `full_rewrite`, `previous_end` is empty and `current_start`/`current_end` are the
-  committed dataset's coverage. It does not claim which periods changed.
+  committed dataset's coverage. It does not claim which periods changed, so a pipeline on the
+  dataset re-runs its whole coverage on every publication.
+- **A rewrite never shortens a published dataset.** One that would start later or end earlier
+  than the published coverage is refused before anything is committed. It may cover more.
 - **The producing job owns it, one event per commit.** The event carries `producer_type: openeo`,
   `producer_job_id` and `output_snapshot_id`, and its id is derived from the job, the artifact
   and the committed snapshot. Completing the same commit again, in a retry or at a restart, is

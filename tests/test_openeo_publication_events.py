@@ -54,8 +54,17 @@ class _Crash(BaseException):
     """A process dying at this point: not handled, so the job stays RUNNING."""
 
 
-def _cube(value: float, *, start: str = "2026-01-01") -> xr.Dataset:
-    times = pd.date_range(start, periods=3, freq="D")
+def _cube(value: float, *, start: str = "2026-01-01", periods: int = 3, temporal: bool = True) -> xr.Dataset:
+    if not temporal:
+        flat = xr.DataArray(
+            np.full((2, 2), value, dtype="float32"),
+            dims=("y", "x"),
+            coords={"y": [1.0, 0.0], "x": [0.0, 1.0]},
+            name="precip",
+            attrs={"units": "mm/d"},
+        )
+        return flat.to_dataset(name="precip").rio.write_crs("EPSG:4326")
+    times = pd.date_range(start, periods=periods, freq="D")
     data = xr.DataArray(
         np.full((len(times), 2, 2), value, dtype="float32"),
         dims=("t", "y", "x"),
@@ -98,6 +107,8 @@ def _job(
     graph_runs: list[str] | None = None,
     max_attempts: int = 1,
     start: str = "2026-01-01",
+    periods: int = 3,
+    temporal: bool = True,
 ) -> None:
     """A queued, user-submitted job whose graph publishes `value` as a managed dataset."""
 
@@ -105,7 +116,7 @@ def _job(
         if graph_runs is not None:
             graph_runs.append(job_id)
         envelope = SaveResultEnvelope(
-            _cube(value, start=start),
+            _cube(value, start=start, periods=periods, temporal=temporal),
             "ZARR",
             {"dataset_id": _DATASET, "variable": "precip", "publish": publish},
         )
@@ -303,17 +314,97 @@ def test_a_full_store_rewrite_with_changed_coverage_keeps_the_published_artifact
     service._execute("first")
     [before] = _artifacts()
 
-    _job("second", 7.0, monkeypatch, publish=False, start="2026-02-01")
+    # A wider range: the rewrite may grow the published coverage, never shrink it.
+    _job("second", 7.0, monkeypatch, publish=False, start="2025-12-31", periods=5)
     service._execute("second")
 
     [after] = _artifacts()
     assert after.artifact_id == before.artifact_id
     assert after.publication.status == PublicationStatus.PUBLISHED
-    assert (after.coverage.temporal.start, after.coverage.temporal.end) == ("2026-02-01", "2026-02-03")
+    assert (after.coverage.temporal.start, after.coverage.temporal.end) == ("2025-12-31", "2026-01-04")
     [event] = _record("second").events
     assert event.data["artifact_id"] == before.artifact_id
-    assert (event.data["current_start"], event.data["current_end"]) == ("2026-02-01", "2026-02-03")
+    assert (event.data["current_start"], event.data["current_end"]) == ("2025-12-31", "2026-01-04")
     assert [item.event_id for item in received] == [_record("first").events[0].event_id, event.event_id]
+
+
+@pytest.mark.parametrize(
+    ("start", "periods", "side"),
+    [("2025-12-30", 3, "ends at 2026-01-01"), ("2026-01-02", 5, "starts at 2026-01-02")],
+    ids=["ends-earlier", "starts-later"],
+)
+def test_a_rewrite_that_would_shrink_a_published_dataset_is_refused(
+    service: Any,
+    received: list[JobEvent],
+    monkeypatch: pytest.MonkeyPatch,
+    start: str,
+    periods: int,
+    side: str,
+) -> None:
+    _job("first", 5.0, monkeypatch)
+    service._execute("first")
+    [before] = _artifacts()
+    first_event = _assert_one_published_event("first")
+
+    # Only the updated periods, as a trigger over [previous_end, current_end] computes them.
+    _job("second", 7.0, monkeypatch, start=start, periods=periods, max_attempts=2)
+    assert service._execute("second") is None  # permanent: not retried
+    second = _record("second")
+    assert second.status == OpenEOJobStatus.ERROR
+    assert "Refusing to rewrite published dataset" in (second.error_message or "") and side in (
+        second.error_message or ""
+    )
+    # Nothing planned, committed, registered or announced; the history is intact.
+    assert second.publication is None and second.events == [] and _commits("second") == []
+    [after] = _artifacts()
+    assert after == before
+    assert (after.coverage.temporal.start, after.coverage.temporal.end) == ("2026-01-01", "2026-01-03")
+    assert received == [first_event]
+
+
+def test_a_result_without_temporal_coverage_cannot_replace_a_published_temporal_dataset(
+    service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job("first", 5.0, monkeypatch)
+    service._execute("first")
+    [before] = _artifacts()
+    first_event = _assert_one_published_event("first")
+
+    _job("second", 7.0, monkeypatch, temporal=False)
+    assert service._execute("second") is None  # permanent: not retried
+    second = _record("second")
+    assert second.status == OpenEOJobStatus.ERROR
+    assert "no temporal coverage to compare" in (second.error_message or "")
+    assert second.publication is None and second.events == [] and _commits("second") == []
+    [after] = _artifacts()
+    assert after == before and received == [first_event]
+
+
+def test_a_non_temporal_published_dataset_may_be_rewritten(
+    service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job("first", 5.0, monkeypatch, temporal=False)
+    service._execute("first")
+    [before] = _artifacts()
+    assert before.publication.status == PublicationStatus.PUBLISHED
+    assert (before.coverage.temporal.start, before.coverage.temporal.end) == (None, None)
+    _job("second", 7.0, monkeypatch, temporal=False)
+    service._execute("second")
+    assert _record("second").status == OpenEOJobStatus.FINISHED
+    [after] = _artifacts()
+    assert after.artifact_id == before.artifact_id and len(_record("second").events) == 1
+
+
+def test_an_unpublished_dataset_may_be_rewritten_to_any_range(
+    service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job("first", 5.0, monkeypatch, publish=False)
+    service._execute("first")
+    _job("second", 7.0, monkeypatch, publish=False, start="2026-01-02", periods=1)
+    service._execute("second")
+    assert _record("second").status == OpenEOJobStatus.FINISHED
+    [artifact] = _artifacts()
+    assert (artifact.coverage.temporal.start, artifact.coverage.temporal.end) == ("2026-01-02", "2026-01-02")
 
 
 # --- duplicates ------------------------------------------------------------------------------

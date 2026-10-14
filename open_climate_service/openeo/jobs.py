@@ -1518,6 +1518,72 @@ def complete_managed_publication(job_id: str, snapshot_id: str) -> OpenEOJobReco
     return store_update_job(job_id, _complete)
 
 
+def _coverage_point(label: str | None) -> Any:
+    """A coverage boundary as a timestamp, or None when the label cannot be read as a date."""
+    import pandas as pd
+
+    if label is None:
+        return None
+    try:
+        return pd.Timestamp(label)
+    except (ValueError, TypeError):
+        return None
+
+
+def _refuse_coverage_shrink(record: Any) -> None:
+    """Refuse a full-store rewrite that would shorten a published managed dataset.
+
+    The writer replaces the whole store, so a job that computes only recent periods (a trigger
+    over ``[$event.previous_end, $event.current_end]``) would silently drop the history a
+    published dataset holds. Until derived datasets can be appended to, a rewrite must cover
+    at least the published coverage: it may start earlier and end later, never start later or
+    end earlier. The same rule a release sync follows. A boundary the published dataset has
+    but the result lacks (a result with no time axis, or with its temporal metadata lost)
+    cannot be shown not to shrink it, so it is refused too; a dataset published without that
+    boundary may still be rewritten. Raised as a ValueError, which is a permanent error while
+    saving: retrying the same graph would shrink it the same way.
+    """
+    from open_climate_service.ingestions import services as ingestion_services
+    from open_climate_service.ingestions.schemas import PublicationStatus
+
+    if record.path is None:
+        return
+    store_path = str(Path(record.path).resolve())
+    published = [
+        stored
+        for stored in ingestion_services._load_records()
+        if stored.dataset_id == record.dataset_id
+        and stored.format == record.format
+        and stored.path is not None
+        and str(Path(stored.path).resolve()) == store_path
+        and stored.publication.status == PublicationStatus.PUBLISHED
+    ]
+    if not published:
+        return
+    held = published[-1].coverage.temporal
+    new = record.coverage.temporal
+    pairs = (("starts", held.start, new.start, 1), ("ends", held.end, new.end, -1))
+    for side, held_label, new_label, direction in pairs:
+        if held_label is None:
+            continue  # nothing published at this boundary to protect
+        if new_label is None:
+            raise ValueError(
+                f"Refusing to rewrite published dataset '{record.dataset_id}': it holds {held.start} to "
+                f"{held.end}, but the result has no temporal coverage to compare (it {side} nowhere), and a "
+                "rewrite replaces the whole store. Publish a result over the full range, or to a new dataset_id"
+            )
+        held_at, new_at = _coverage_point(held_label), _coverage_point(new_label)
+        # Dates where both read as dates; otherwise periods compare lexically, as in sync.
+        later = (new_at > held_at) if held_at is not None and new_at is not None else (new_label > held_label)
+        earlier = (new_at < held_at) if held_at is not None and new_at is not None else (new_label < held_label)
+        if (direction == 1 and later) or (direction == -1 and earlier):
+            raise ValueError(
+                f"Refusing to rewrite published dataset '{record.dataset_id}': the result {side} at {new_label}, "
+                f"but the dataset holds {held.start} to {held.end}, and a rewrite replaces the whole store. "
+                "Compute the full range (not only the updated periods), or publish to a new dataset_id"
+            )
+
+
 def _plan_publication(job_id: str, publication: ManagedPublication) -> None:
     """Persist a publication's intent, before anything reaches the store."""
     store_update_job(job_id, lambda r: r.model_copy(update={"publication": publication, "updated": utc_now()}))
@@ -1669,6 +1735,8 @@ def _write_managed_zarr(
             "run this job again once that finishes"
         )
     try:
+        # Refused before anything is planned or written: no commit, no event, the store unchanged.
+        _refuse_coverage_shrink(record)
         commit_message = f"Published from openEO job: {dataset_id}"
         # The producing job owns the publication only if it is persisted: its record is where
         # the intent, the outcome and the event are kept durably.
