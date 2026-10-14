@@ -58,6 +58,17 @@ Before handing work back, run `make fix`, then `make lint` and `make test`. All 
 - **Suppress narrowly.** A `# type: ignore`, `# pyright: ignore` or `# noqa` names the specific code it silences; blanket ones fail lint. Fix the type rather than suppress it where you can.
 - **Wording.** "Data source" in the API and web interface; "dataset template" for the YAML files that describe one.
 
+## Known pitfalls
+
+Silent failures found the hard way. Each passed its tests at first.
+
+- **Timestamps in openEO process arguments lose their offset.** Every argument that parses as an ISO 8601 timestamp is made timezone-naive before the process sees it (`_normalise_temporal_arguments` in `openeo/execution.py`). Never pass one through as an opaque token and compare it as a string; compare parsed instants.
+- **`TestClient(root_path=...)` does not prefix the path** the way uvicorn does, so a test of prefix handling passes with the fix removed. Use the `mounted_client_factory` fixture in `tests/conftest.py`.
+- **topozarr above 0.1.8 shards pyramids along time by default.** On an appending store every daily sync then rewrites the partial shard, about 25 times more data written. Set the shard size explicitly before upgrading.
+- **Tests that assert on a submitted request** (a process graph, a job body) do not show that it runs. Execute it once.
+
+For adding a data source, follow the checklist in [docs/adding_custom_datasets.md](docs/adding_custom_datasets.md#contributing-a-data-source).
+
 ## Dataset templates
 
 Each YAML file in `plugins/rasters/` holds raster dataset templates, one per data source. The `ingestion` block names the streaming plugin class, a `BaseDatasetPlugin` subclass implementing `periods()` and `fetch_period()`:
@@ -70,11 +81,9 @@ ingestion:
 
 `write_to_icechunk_store` in `data_manager/services/downloader.py` builds a multiscale Zarr pyramid when the grid has more than 1024×1024 pixels; otherwise it writes a flat store. Ingestion and sync write one time step per chunk; see `docs/zarr_and_geozarr.md`.
 
-## Active design work
+## Planned work
 
-- **#64** — streaming ingest via Icechunk; per-period writes; no intermediate files
-- **#111** — async job execution; OGC API Processes; progress reporting
-- **#137** — spatial aggregation to DHIS2 org units; multi-dataset grid alignment
+Tracked in Jira, project [CLIM](https://dhis2.atlassian.net/jira/software/c/projects/CLIM/issues), component "Climate Service", grouped under one epic per area (data ingestion, processing and workflows, openEO, catalogue and metadata, GeoZarr and Icechunk storage, vector data, DHIS2 integration, and so on). GitHub issues are not used.
 
 ## Commit conventions
 
