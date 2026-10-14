@@ -383,7 +383,7 @@ def test_the_map_viewer_lists_vector_datasets_and_draws_their_tiles(client: Test
     # Listed from /collections like the rasters, so the same publication gate applies to both.
     assert 'fetch("/datasets"' not in body
     assert "publication?.status" not in body
-    assert 'if (collection.assets?.data?.type === "application/x-parquet") {' in body
+    assert 'if (collection.assets?.data?.type === "application/vnd.apache.parquet") {' in body
     assert "const styleHref = collection.assets?.style?.href;" in body
     # The style's source carries the attribution; vectors have no units.
     assert "fetch(`/features/${encodeURIComponent(collection.id)}`)" in body

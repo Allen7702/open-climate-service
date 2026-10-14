@@ -648,7 +648,7 @@
           return;
         }
 
-        if (collection.assets?.data?.type === "application/x-parquet") {
+        if (collection.assets?.data?.type === "application/vnd.apache.parquet") {
           await loadFeatures(collection, superseded);
           return;
         }
