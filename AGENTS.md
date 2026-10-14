@@ -55,7 +55,7 @@ Before handing work back, run `make fix`, then `make lint` and `make test`. All 
 - **Size defaults for a laptop.** OCS normally runs on one (8 cores, 8–16 GB). Concurrency, thread pools and memory-heavy work default low; servers raise them through settings.
 - **Build the simplest version first.** Add server-side machinery for speed or size only when the plain approach is too slow where OCS runs, and name the optimisation as a follow-up instead.
 - **No backward compatibility yet.** Renames, schema changes and forced re-downloads on existing instances are fine; say so in one line of the PR.
-- **Suppress narrowly.** A `# type: ignore`, `# pyright: ignore` or `# noqa` names the specific code it silences; blanket ones fail lint. Fix the type rather than suppress it where you can.
+- **Suppress narrowly.** A `# type: ignore`, `# pyright: ignore` or `# noqa` names the specific code it silences. Lint rejects a blanket `# type: ignore` or `# noqa`; a blanket `# pyright: ignore` is not caught, so review for it. Fix the type rather than suppress it where you can.
 - **Wording.** "Data source" in the API and web interface; "dataset template" for the YAML files that describe one.
 
 ## Known pitfalls
