@@ -37,12 +37,26 @@ docs/
 
 ```bash
 make run      # start uvicorn with --reload
+make fix      # ruff autofix + format
 make lint     # ruff check + ruff format + mypy + pyright
 make test     # pytest
 make start    # docker compose up --build
 ```
 
 The `.env` file is required for `make run`. Copy `.env.example` if it exists.
+
+Before handing work back, run `make fix`, then `make lint` and `make test`. All of `make lint` must pass, not only ruff and mypy: pyright runs in strict mode and rejects code mypy accepts, such as a parameter reassigned after its `None` check.
+
+## Working rules
+
+- **Test through the entry point.** Drive the route, `fetch_period`, or the publish path, not the helper underneath. Bugs found in review usually sit in a caller that bypassed a correct, well-tested helper.
+- **Count the places that enforce a rule.** If the same rule is checked in more than one place, decide it once and call that.
+- **Run the real path once.** Ingest a period or call the route on a local instance and read the output. Implausible values and leaked metadata show up there, not in unit tests.
+- **Size defaults for a laptop.** OCS normally runs on one (8 cores, 8–16 GB). Concurrency, thread pools and memory-heavy work default low; servers raise them through settings.
+- **Build the simplest version first.** Add server-side machinery for speed or size only when the plain approach is too slow where OCS runs, and name the optimisation as a follow-up instead.
+- **No backward compatibility yet.** Renames, schema changes and forced re-downloads on existing instances are fine; say so in one line of the PR.
+- **Suppress narrowly.** A `# type: ignore`, `# pyright: ignore` or `# noqa` names the specific code it silences; blanket ones fail lint. Fix the type rather than suppress it where you can.
+- **Wording.** "Data source" in the API and web interface; "dataset template" for the YAML files that describe one.
 
 ## Dataset templates
 
