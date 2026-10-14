@@ -94,6 +94,13 @@ def instance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, datasets: list[Any
     from open_climate_service.system import templates as system_templates
 
     monkeypatch.setattr(api_config, "get_data_root", lambda: tmp_path / "data")
+    # Event replay reads both job stores: keep them inside this test's directory.
+    from open_climate_service.jobs import store as native_store
+    from open_climate_service.openeo import jobs as openeo_jobs
+
+    monkeypatch.setattr(openeo_jobs, "_JOBS_DIR", tmp_path / "openeo_jobs")
+    monkeypatch.setattr(native_store, "JOBS_DIR", tmp_path / "data" / "jobs")
+    monkeypatch.setattr(native_store, "JOBS_INDEX_PATH", tmp_path / "data" / "jobs" / "jobs.json")
     monkeypatch.setattr(
         api_config, "_cache", {"dhis2_connections": [{"id": "local", "url": "http://dhis2.test", "token_env": "T"}]}
     )
@@ -2200,6 +2207,57 @@ def test_an_update_older_than_the_checkpoint_is_not_run_but_listed(
     assert record.events.skipped[0].reason == "it arrived after the checkpoint had passed its time"
 
 
+def _openeo_owned_update(event_id: str, *, dataset_id: str = "rain_monthly") -> Any:
+    """A full-rewrite update persisted on the openEO job that published the dataset."""
+    from open_climate_service.ingestions.processes import FULL_REWRITE_EVENT_ACTION, dataset_update_event
+    from open_climate_service.jobs.models import JobEvent
+    from open_climate_service.openeo import jobs as openeo_jobs
+    from open_climate_service.openeo.schemas import OpenEOJobRecord, OpenEOJobStatus
+
+    draft = dataset_update_event(
+        dataset_id=dataset_id,
+        artifact_id="derived-artifact",
+        action=FULL_REWRITE_EVENT_ACTION,
+        previous_end=None,
+        current_start="2024-01",
+        current_end="2025-02",
+        producer_type="openeo",
+        producer_job_id="derived-job",
+        output_snapshot_id="SNAPSHOT00000000000A",
+    )
+    event = JobEvent(event_id=event_id, time=datetime.now(UTC) + timedelta(seconds=1), **draft.model_dump())
+    openeo_jobs.store_create_job(
+        OpenEOJobRecord(id="derived-job", status=OpenEOJobStatus.FINISHED, created=datetime.now(UTC), events=[event])
+    )
+    return event
+
+
+def test_an_update_owned_by_an_openeo_job_runs_a_pipeline_like_any_other(
+    instance: None, openeo: _FakeOpenEO, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dhis2(monkeypatch)
+    _validated()
+    event = _openeo_owned_update("derived-job:publication:derived-artifact")
+
+    # Startup reconciliation finds it through the shared event log, owned by an openEO job.
+    runner.reconcile_events()
+    runner.reconcile_events()
+    runner.consume([event])  # and the live consumer, given it again, adds nothing
+    record = store.get_record("rain-to-dhis2")
+    assert record is not None
+    [run] = record.runs
+    assert run.trigger == "dataset_update" and run.event_id == event.event_id
+    # A full rewrite covers the whole committed coverage.
+    assert (run.start, run.end) == ("2024-01", "2025-02") and run.source["update"] == "rewritten"
+    assert run.source["action"] == "full_rewrite"
+    assert len(openeo.started) == 1
+
+    # Nothing in the runner knows where an update came from.
+    source = Path(runner.__file__).read_text(encoding="utf-8").lower()
+    for origin in ("producer", "derived", "full_rewrite", "output_snapshot", "publication"):
+        assert origin not in source, origin
+
+
 def test_only_workflows_that_meet_the_contract_are_offered() -> None:
     ready = {
         record.id for record in workflow_store.list_workflows().processes if workflow_binding.pipeline_ready(record)
@@ -2481,6 +2539,240 @@ def test_end_to_end_a_registered_workflow_dry_runs_and_delivers_live(
         assert manual_manifest.mapping == automatic_manifest.mapping
         assert manual_manifest.references == automatic_manifest.references
         assert manual_manifest.target == automatic_manifest.target
+    finally:
+        job_service.shutdown()
+        job_service_module.reset_job_service()
+
+
+def test_end_to_end_an_anomaly_dataset_publishes_and_drives_a_pipeline_to_dhis2(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, datasets: list[Any]
+) -> None:
+    """A real anomaly workflow publishes a managed dataset; its update runs an aggregation pipeline to DHIS2.
+
+    The real openEO job service, workflow engine, managed Icechunk writer, event consumer and
+    delivery path. Only data loading, feature loading and DHIS2 itself are stubbed; no network.
+    """
+    from openeo_pg_parser_networkx.process_registry import Process
+
+    from open_climate_service.data_accessor.services.accessor import open_icechunk_dataset
+    from open_climate_service.data_registry.services import datasets as registry
+    from open_climate_service.exports.dhis2_renderer import Dhis2ExportPlugin
+    from open_climate_service.exports.report import ExportOutcome, ExportReport
+    from open_climate_service.ingestions import services as ingestion_services
+    from open_climate_service.jobs import service as job_service_module
+    from open_climate_service.jobs.models import JobStatus
+    from open_climate_service.openeo import execution
+    from open_climate_service.openeo import jobs as openeo_jobs
+    from open_climate_service.openeo.schemas import OpenEOJobRecord, OpenEOJobStatus
+    from open_climate_service.shared.provenance import record_source
+    from open_climate_service.shared.time import utc_now
+
+    # A temporary template registry and store directory, as `managed_instance` provides.
+    configs = tmp_path / "managed" / "plugins" / "rasters"
+    configs.mkdir(parents=True)
+    (configs / "source.yaml").write_text(
+        "- id: chirps3_precipitation_daily\n"
+        "  name: Total precipitation (CHIRPS3)\n"
+        "  variable: precip\n"
+        "  period_type: daily\n"
+        "  units: mm/d\n"
+        "  license: CC-BY-4.0\n"
+        "  sync:\n"
+        "    kind: temporal\n"
+        "  ingestion:\n"
+        "    plugin: open_climate_service.plugins.rasters.chirps3.CHIRPS3DailyPlugin\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(registry, "CONFIGS_DIR", configs)
+    registry.reset_template_caches()
+    (tmp_path / "managed" / "rasters").mkdir()
+    monkeypatch.setattr(
+        "open_climate_service.data_manager.services.downloader.DOWNLOAD_DIR", tmp_path / "managed" / "rasters"
+    )
+    monkeypatch.setattr(ingestion_services, "ARTIFACTS_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(ingestion_services, "ARTIFACTS_INDEX_PATH", tmp_path / "artifacts" / "records.json")
+
+    derived = "rain_anomaly_monthly"
+    datasets.append(_dataset(dataset_id=derived))
+    grid = {"y": [1.0, 2.0, 3.0, 4.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0]}
+
+    def observed() -> xr.DataArray:
+        values = np.arange(2 * 4 * 5, dtype="float32").reshape(2, 4, 5) + 10
+        cube = xr.DataArray(
+            values,
+            dims=("t", "y", "x"),
+            coords={"t": np.array(["2025-01-01", "2025-02-01"], dtype="datetime64[ns]"), **grid},
+            name="precip",
+            attrs={"units": "mm/d"},
+        )
+        return cube.rio.write_crs("EPSG:4326")
+
+    def normal() -> xr.DataArray:
+        values = np.broadcast_to(np.arange(1, 13, dtype="float32")[:, None, None], (12, 4, 5)).copy()
+        cube = xr.DataArray(
+            values, dims=("month", "y", "x"), coords={"month": list(range(1, 13)), **grid}, attrs={"units": "mm/d"}
+        )
+        return cube.rio.write_crs("EPSG:4326")
+
+    def load_collection(id: str | None = None, temporal_extent: Any = None, **_: Any) -> xr.DataArray:
+        record_source(str(id), SimpleNamespace(artifact_id=f"{id}-artifact", source_dataset_id=id, path=None))
+        if id == "chirps3_precipitation_daily":
+            return observed()
+        if id == "rain_normal_monthly":
+            return normal()
+        if id == derived:  # what the anomaly job published, read back from its store
+            store = tmp_path / "managed" / "rasters" / f"{derived}.icechunk"
+            with open_icechunk_dataset(str(store)) as ds:
+                return ds["precip"].load()
+        raise AssertionError(f"unexpected collection {id}")
+
+    def load_features(id: str, version: str | None = None, **_: Any) -> dict[str, Any]:
+        return {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "id": _OU[0], "geometry": _box(0.5, 0.5, 2.5, 2.5)},
+                {"type": "Feature", "id": _OU[1], "geometry": _box(3.5, 2.5, 5.5, 4.5)},
+            ],
+        }
+
+    base = execution._build_process_registry()
+    mocked = execution._RegistryOverlay(
+        base,
+        {
+            "load_collection": Process(spec={}, implementation=load_collection),
+            "load_features": Process(spec={}, implementation=load_features),
+        },
+    )
+    monkeypatch.setattr(execution, "_build_process_registry", lambda: mocked)
+    sent: list[dict[str, Any]] = []
+
+    def send(
+        self: Dhis2ExportPlugin, payload: bytes, target: Any, *, dry_run: bool = False, context: Any = None
+    ) -> ExportReport:
+        sent.append({"payload": json.loads(payload), "target": target, "dry_run": dry_run})
+        return ExportReport(
+            plugin_id=self.id,
+            connection_id=target,
+            dry_run=dry_run,
+            outcome=ExportOutcome.DRY_RUN if dry_run else ExportOutcome.SUCCESS,
+            payload_sha256=hashlib.sha256(payload).hexdigest(),
+            submitted=4,
+            created_at=utc_now().isoformat(),
+            finished_at=utc_now().isoformat(),
+        )
+
+    monkeypatch.setattr(Dhis2ExportPlugin, "send", send)
+    _dhis2(monkeypatch)
+
+    # The aggregation pipeline over the derived dataset, created before the dataset updates.
+    arguments = {**_SPEC["workflow"]["arguments"], "dataset_id": derived}
+    _validated(_spec(id="anomaly-to-dhis2", workflow={**_SPEC["workflow"], "arguments": arguments}))
+
+    job_service = openeo_jobs.OpenEOJobService()
+    monkeypatch.setattr(openeo_jobs, "get_openeo_job_service", lambda: job_service)
+    job_service.set_finished_listener(runner.on_job_finished)
+    job_service.set_event_consumer(runner.consume)  # as main wires it, beside native jobs
+    try:
+        openeo_jobs.store_create_job(
+            OpenEOJobRecord(
+                id="anomaly-job",
+                status=OpenEOJobStatus.QUEUED,
+                created=utc_now(),
+                process={
+                    "process_graph": {
+                        "anomaly": {
+                            "process_id": "climate_anomaly",
+                            "arguments": {
+                                "observed_dataset_id": "chirps3_precipitation_daily",
+                                "normal_dataset_id": "rain_normal_monthly",
+                                "output_dataset_id": derived,
+                                "variable": "precip",
+                                "temporal_extent": ["2025-01-01", "2025-02-28"],
+                            },
+                            "result": True,
+                        }
+                    }
+                },
+            )
+        )
+        job_service._execute("anomaly-job")
+        anomaly = openeo_jobs.store_get_job("anomaly-job")
+        assert anomaly is not None and anomaly.status == OpenEOJobStatus.FINISHED, (
+            anomaly.error_message if anomaly else None
+        )
+        [update] = anomaly.events
+        assert update.data["dataset_id"] == derived and update.data["action"] == "full_rewrite"
+        assert update.data["previous_end"] is None and update.data["producer_job_id"] == "anomaly-job"
+        [artifact] = [record for record in ingestion_services._load_records() if record.dataset_id == derived]
+        assert (
+            artifact.provenance is not None
+            and artifact.provenance.output_snapshot_id == update.data["output_snapshot_id"]
+        )
+
+        # The update ran the pipeline through the live consumer; wait for its delivery.
+        deadline = time.monotonic() + 30
+        record = store.get_record("anomaly-to-dhis2")
+        while time.monotonic() < deadline:
+            record = store.get_record("anomaly-to-dhis2")
+            if record is not None and record.runs and record.runs[0].delivery_job_id:
+                break
+            time.sleep(0.05)
+        assert record is not None and len(record.runs) == 1, record.runs if record else None
+        [run] = record.runs
+        assert run.trigger == "dataset_update" and run.event_id == update.event_id
+        assert run.delivery == "submitted", (run.error, openeo_jobs.store_get_job(run.job_id))
+        native = job_service_module.get_job_service()
+        delivery = native.get_job_or_404(run.delivery_job_id or "")
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and delivery.status not in {
+            JobStatus.SUCCESSFUL,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+        }:
+            time.sleep(0.05)
+            delivery = native.get_job_or_404(run.delivery_job_id or "")
+        assert delivery.status == JobStatus.SUCCESSFUL, delivery.error
+        [delivered] = sent
+        assert delivered["dry_run"] is True and delivered["target"] == "local"
+        values = delivered["payload"]["dataValues"]
+        assert {value["orgUnit"] for value in values} == set(_OU)
+        assert {value["period"] for value in values} == {"202501", "202502"}
+        assert {value["dataElement"] for value in values} == {_ELEMENT}
+
+        # Replaying the update at a restart runs nothing again.
+        runner.reconcile_events()
+        assert len(store.get_record("anomaly-to-dhis2").runs) == 1  # type: ignore[union-attr]
+
+        # A deliberate re-run commits a new snapshot: a new update, and the pipeline runs again.
+        openeo_jobs.store_update_job(
+            "anomaly-job", lambda r: r.model_copy(update={"status": OpenEOJobStatus.QUEUED, "attempt": 0})
+        )
+        job_service._execute("anomaly-job")
+        rerun = openeo_jobs.store_get_job("anomaly-job")
+        assert rerun is not None and rerun.status == OpenEOJobStatus.FINISHED and len(rerun.events) == 2
+        second_update = rerun.events[1]
+        assert second_update.event_id != update.event_id
+        assert second_update.data["output_snapshot_id"] != update.data["output_snapshot_id"]
+        while time.monotonic() < deadline:
+            record = store.get_record("anomaly-to-dhis2")
+            again = next((r for r in record.runs if r.event_id == second_update.event_id), None) if record else None
+            if again is not None and again.delivery_job_id:
+                break
+            time.sleep(0.05)
+        record = store.get_record("anomaly-to-dhis2")
+        assert record is not None and {r.event_id for r in record.runs} == {update.event_id, second_update.event_id}
+        again = next(r for r in record.runs if r.event_id == second_update.event_id)
+        assert again.delivery == "submitted"
+        delivery = native.get_job_or_404(again.delivery_job_id or "")
+        while time.monotonic() < deadline and delivery.status not in {
+            JobStatus.SUCCESSFUL,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+        }:
+            time.sleep(0.05)
+            delivery = native.get_job_or_404(again.delivery_job_id or "")
+        assert delivery.status == JobStatus.SUCCESSFUL, delivery.error
+        assert len(sent) == 2 and sent[1]["dry_run"] is True
     finally:
         job_service.shutdown()
         job_service_module.reset_job_service()
