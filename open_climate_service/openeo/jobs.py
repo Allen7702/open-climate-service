@@ -406,11 +406,16 @@ class OpenEOJobService:
                         requeue = self._recover(record.id)
                 if not won:
                     logger.warning("openEO job %s is still executing in another process; watching it", record.id)
-                    self._watch_for_takeover(record.id)
+                    self._watch_for_recovery(record.id)
                 elif requeue:
                     self._enqueue(record.id)
             except Exception:
-                logger.exception("Could not recover openEO job %s; continuing with the others", record.id)
+                latest = store_get_job(record.id)
+                if latest is not None and _commit_pending(latest):
+                    logger.exception("Could not complete the publication of openEO job %s yet; watching it", record.id)
+                    self._watch_for_recovery(record.id)
+                else:
+                    logger.exception("Could not recover openEO job %s; continuing with the others", record.id)
 
     def _recover(self, job_id: str) -> bool:
         """Prepare one interrupted job while holding its lease; return whether to run it now."""
@@ -518,11 +523,14 @@ class OpenEOJobService:
             self._after_finished(finished)
         return "finished"
 
-    def _watch_for_takeover(self, job_id: str) -> None:
-        """Take over a job from another process once its execution lease is released.
+    def _watch_for_recovery(self, job_id: str) -> None:
+        """Recover a job once its leases and other transient dependencies are available.
 
         The record is re-read under the lease, so a job the other process finished is left
-        alone and one it abandoned is recovered as at startup. One watcher per job at most.
+        alone and one it abandoned is recovered as at startup. A publication that cannot yet
+        take its dataset lock or complete registration remains ``committing`` and is retried;
+        a commit cannot be abandoned merely because a transient dependency stays unavailable.
+        One watcher per job at most.
         """
         with self._lock:
             if self._stopping.is_set() or job_id in self._watched:
@@ -532,10 +540,26 @@ class OpenEOJobService:
         def watch() -> None:
             try:
                 while not self._stopping.wait(self.lease_poll_seconds):
-                    with execution_lease(_execution_lease_path(job_id)) as won:
-                        if not won:
+                    finished: OpenEOJobRecord | None = None
+                    try:
+                        with execution_lease(_execution_lease_path(job_id)) as won:
+                            if not won:
+                                continue
+                            current = store_get_job(job_id)
+                            if current is not None and current.status == OpenEOJobStatus.ERROR:
+                                finished = self._recover_failed_publication(job_id)
+                                requeue = False
+                            else:
+                                requeue = self._recover(job_id)
+                    except Exception as exc:
+                        current = store_get_job(job_id)
+                        if current is not None and _commit_pending(current):
+                            logger.warning("Publication recovery for openEO job %s is still deferred: %s", job_id, exc)
                             continue
-                        requeue = self._recover(job_id)
+                        logger.exception("Could not recover watched openEO job %s", job_id)
+                        return
+                    if finished is not None:
+                        self._after_finished(finished)
                     if requeue and not self._stopping.is_set():
                         logger.info("Took over openEO job %s after its previous process released it", job_id)
                         with self._lock:
@@ -854,7 +878,7 @@ class OpenEOJobService:
         # Only once this worker is neither leased nor registered: otherwise a requeue from a
         # watcher or a retry timer could be refused as a duplicate and leave the job idle.
         if watch:
-            self._watch_for_takeover(job_id)
+            self._watch_for_recovery(job_id)
         elif retry_after is not None:
             self._schedule_retry(job_id, retry_after)
 
@@ -1095,8 +1119,8 @@ class OpenEOJobService:
 
         A job whose final attempt failed after its commit is ERROR, which ordinary recovery
         does not look at. Its commit is completed here, with its one event, and the job is
-        marked FINISHED. Nothing committed: the publication is cleared. Completing that fails
-        again is logged and tried at the next start.
+        marked FINISHED. Nothing committed: the publication is cleared. A transient failure
+        starts a process-local watcher which retries until completion or shutdown.
         """
         for record in store_list_jobs():
             if record.status != OpenEOJobStatus.ERROR or record.publication is None:
@@ -1105,23 +1129,31 @@ class OpenEOJobService:
                 continue
             try:
                 with execution_lease(_execution_lease_path(record.id)) as won:
-                    if not won:
-                        continue
-                    if self._reconcile_commit(record.id) is not True:
-                        continue
-                    dataset_id = record.publication.dataset_id
-                    finished = store_update_job(
-                        record.id,
-                        lambda r: self._finish(r, f"managed://{dataset_id}").model_copy(
-                            update={"error_message": None, "logs": _append_log(r, "publication completed at restart")}
-                        ),
-                    )
-                if finished.status == OpenEOJobStatus.FINISHED:
+                    finished = self._recover_failed_publication(record.id) if won else None
+                if not won:
+                    self._watch_for_recovery(record.id)
+                    continue
+                if finished is not None and finished.status == OpenEOJobStatus.FINISHED:
                     self._after_finished(finished)
             except Exception:
-                logger.exception(
-                    "Could not complete the publication of openEO job %s; retrying at the next start", record.id
-                )
+                logger.exception("Could not complete the publication of openEO job %s yet; watching it", record.id)
+                self._watch_for_recovery(record.id)
+
+    def _recover_failed_publication(self, job_id: str) -> OpenEOJobRecord | None:
+        """Complete one ERROR job's pending commit while its execution lease is held."""
+        record = store_get_job(job_id)
+        if record is None or record.status != OpenEOJobStatus.ERROR or not _commit_pending(record):
+            return None
+        assert record.publication is not None
+        dataset_id = record.publication.dataset_id
+        if self._reconcile_commit(job_id) is not True:
+            return None
+        return store_update_job(
+            job_id,
+            lambda r: self._finish(r, f"managed://{dataset_id}").model_copy(
+                update={"error_message": None, "logs": _append_log(r, "publication completed during recovery")}
+            ),
+        )
 
     def _enter_publication(self, job_id: str) -> None:
         """Pass the point of no return, or raise if the job was cancelled first.

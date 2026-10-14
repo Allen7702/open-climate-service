@@ -74,6 +74,11 @@ runs). Bind such a trigger to the complete coverage instead:
 Appending to a derived dataset, which would let it compute only the new periods, is not
 supported yet.
 
+Managed-output triggers must also form an acyclic dataset graph. OCS rejects a trigger that
+writes its own source, including `output_dataset_id: $event.dataset_id`, and rejects chains such
+as A -> B -> A at startup. Every successful managed rewrite emits another durable update, so
+allowing such a cycle would create jobs indefinitely.
+
 The workflow definition remains reusable and deployment-independent. Operational bindings such
 as output dataset IDs, geometries, and DHIS2 identifiers remain in instance configuration.
 
@@ -169,8 +174,9 @@ after it, and while a commit is unresolved, cancellation is refused.
 An ordinary error after the gate (registering the artifact, publishing it, recording the
 outcome) never loses a commit that landed. The failing attempt completes the publication if it
 can, and the job finishes. If it cannot, the publication stays `committing`: a retry completes
-it from the existing commit rather than computing and committing again, and a job whose final
-attempt failed is completed at the next start, with its one event, and marked finished.
+it from the existing commit rather than computing and committing again. Startup recovery keeps
+watching a pending final attempt while its dataset lock or another transient dependency is
+unavailable; once completion succeeds, the job is marked finished and its one event is emitted.
 
 Each event and trigger pair produces a deterministic openEO job ID. OCS replays persisted events
 at startup, but an already created, queued, running, or completed job is not duplicated. If OCS

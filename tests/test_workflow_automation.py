@@ -327,20 +327,68 @@ def test_file_producing_workflow_is_not_checked(monkeypatch: pytest.MonkeyPatch)
     service.start()  # must not raise
 
 
-def test_unresolvable_output_reference_is_not_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dynamic_same_dataset_output_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     workflow = _workflow("dataset_id", "output_dataset_id")
     service = _service_for_output_check(
         monkeypatch,
         workflow,
         WorkflowTrigger(
-            id="a", on_update_of="chirps", workflow_id="wf", arguments={"output_dataset_id": "$event.dataset_id"}
-        ),
-        WorkflowTrigger(
-            id="b", on_update_of="chirps", workflow_id="wf", arguments={"output_dataset_id": "$event.dataset_id"}
+            id="self", on_update_of="chirps", workflow_id="wf", arguments={"output_dataset_id": "$event.dataset_id"}
         ),
     )
 
-    service.start()  # must not raise; a runtime $event reference is left to the store lock
+    with pytest.raises(ValueError, match=r"chirps -> chirps"):
+        service.start()
+
+
+def test_literal_same_dataset_output_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = _workflow("dataset_id", "output_dataset_id")
+    service = _service_for_output_check(
+        monkeypatch,
+        workflow,
+        WorkflowTrigger(id="self", on_update_of="chirps", workflow_id="wf", arguments={"output_dataset_id": "chirps"}),
+    )
+
+    with pytest.raises(ValueError, match=r"chirps -> chirps"):
+        service.start()
+
+
+def test_default_same_dataset_output_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = _workflow("dataset_id", "output_dataset_id")
+    workflow.parameters[1]["default"] = "chirps"
+    service = _service_for_output_check(
+        monkeypatch,
+        workflow,
+        WorkflowTrigger(id="self", on_update_of="chirps", workflow_id="wf"),
+    )
+
+    with pytest.raises(ValueError, match=r"chirps -> chirps"):
+        service.start()
+
+
+def test_managed_output_cycle_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = _workflow("dataset_id", "output_dataset_id")
+    service = _service_for_output_check(
+        monkeypatch,
+        workflow,
+        WorkflowTrigger(id="a-to-b", on_update_of="a", workflow_id="wf", arguments={"output_dataset_id": "b"}),
+        WorkflowTrigger(id="b-to-a", on_update_of="b", workflow_id="wf", arguments={"output_dataset_id": "a"}),
+    )
+
+    with pytest.raises(ValueError, match=r"a -> b -> a"):
+        service.start()
+
+
+def test_acyclic_managed_output_chain_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = _workflow("dataset_id", "output_dataset_id")
+    service = _service_for_output_check(
+        monkeypatch,
+        workflow,
+        WorkflowTrigger(id="a-to-b", on_update_of="a", workflow_id="wf", arguments={"output_dataset_id": "b"}),
+        WorkflowTrigger(id="b-to-c", on_update_of="b", workflow_id="wf", arguments={"output_dataset_id": "c"}),
+    )
+
+    service.start()
 
 
 def test_missing_activation_skips_replay_for_default_triggers(monkeypatch: pytest.MonkeyPatch) -> None:

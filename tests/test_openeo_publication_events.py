@@ -7,6 +7,7 @@ handle, so the job record is left RUNNING exactly as a killed process leaves it.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -528,6 +529,31 @@ def test_recovery_waits_when_another_writer_holds_the_store(
     assert received == [_assert_one_published_event("job-1")]
 
 
+def test_startup_recovery_retries_after_the_store_lock_is_released(
+    service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job("job-1", 5.0, monkeypatch)
+    _wrap_writer(monkeypatch, after_commit=True)
+    with pytest.raises(_Crash):
+        service._execute("job-1")
+    lock = ingestion_services._acquire_store_lock(_store())
+    assert lock.acquire(blocking=False)
+    service.lease_poll_seconds = 0.01
+    try:
+        service.recover_pending_jobs()
+        pending = _record("job-1")
+        assert pending.status == OpenEOJobStatus.RUNNING
+        assert pending.publication is not None and pending.publication.state == "committing"
+    finally:
+        lock.release()
+
+    deadline = time.monotonic() + 5
+    while _record("job-1").status != OpenEOJobStatus.FINISHED and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert received == [_assert_one_published_event("job-1")]
+
+
 def test_a_crash_after_registration_registers_once_and_emits_once(
     service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -665,6 +691,26 @@ def test_registration_failing_before_writing_anything_is_completed_at_restart(
     assert received == [event]
     service.reconcile_publications()  # again: nothing more
     assert _record("job-1").events == [event] and received == [event]
+
+
+def test_failed_publication_completion_keeps_retrying_after_startup(
+    service: Any, received: list[JobEvent], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job("job-1", 5.0, monkeypatch)
+    failing = _Failing(monkeypatch, "register_artifact_record")
+    service._execute("job-1")
+    assert _record("job-1").status == OpenEOJobStatus.ERROR
+
+    service.lease_poll_seconds = 0.01
+    service.reconcile_publications()
+    assert _record("job-1").publication is not None
+    failing.on = False
+
+    deadline = time.monotonic() + 5
+    while _record("job-1").status != OpenEOJobStatus.FINISHED and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert received == [_assert_one_published_event("job-1")]
 
 
 def test_a_job_with_an_unresolved_commit_cannot_be_deleted(
