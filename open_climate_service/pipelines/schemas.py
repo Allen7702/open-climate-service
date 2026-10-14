@@ -94,43 +94,6 @@ class PipelineSpec(BaseModel):
             raise ValueError("id must start with a letter or digit and carry only letters, digits, '_' or '-'")
         return value
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy(cls, value: Any) -> Any:
-        """Read a draft record saved before workflows were referenced, once, into this shape.
-
-        The first pipeline drafts embedded the DHIS2 destination and a spatial reducer. They map
-        onto ``aggregate_by_features`` and the ``dhis2`` destination; ``range`` and a scheduled
-        release have no counterpart and are dropped. The next save writes the new shape.
-        """
-        if not isinstance(value, dict) or "source" not in value or "workflow" in value:
-            return value
-        legacy: dict[str, Any] = dict(value)
-        source = legacy.pop("source", {}) or {}
-        destination = legacy.pop("destination", {}) or {}
-        aggregation = legacy.pop("aggregation", {}) or {}
-        delivery = dict(legacy.pop("delivery", {}) or {})
-        reducer = (aggregation.get("spatial") or {}).get("reducer", "mean")
-        units = destination.get("organisation_units") or {}
-        delivery.pop("range", None)
-        delivery.pop("release_cron", None)
-        if delivery.get("policy") == "scheduled":
-            delivery["policy"] = "manual"
-        settings = {key: destination[key] for key in ("connection", "data_set", "series") if key in destination}
-        return {
-            **legacy,
-            "workflow": {
-                "id": "aggregate_by_features",
-                "arguments": {
-                    "dataset_id": source.get("dataset"),
-                    "geometries": {"from_features": units.get("feature_collection")},
-                    "method": reducer,
-                },
-            },
-            "destination": {"plugin": destination.get("type", "dhis2"), "settings": settings},
-            "delivery": delivery,
-        }
-
 
 class Check(BaseModel):
     """One validation step and its verdict."""
@@ -248,16 +211,6 @@ class PipelineRun(BaseModel):
     delivery_status_url: str | None = None
     delivered_at: str | None = None
     error: str | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy(cls, value: Any) -> Any:
-        """Runs stored before run ids were their own: the job id was the run's identity."""
-        if isinstance(value, dict) and "run_id" not in value and "job_id" in value:
-            value = {**value, "run_id": value["job_id"]}
-            if value.get("delivery_job_id"):
-                value["delivery"] = "submitted"
-        return value
 
 
 class SkippedUpdate(BaseModel):

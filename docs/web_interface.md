@@ -117,6 +117,11 @@ enables checks by setting `enabled: true` under `scheduler:` in `climate-service
 restarting OCS. If a change cannot be applied, the page shows why.
 ### The pipeline pages (`/pipelines`)
 
+For a new setup that runs a workflow on a dataset and delivers the result, use a pipeline. The
+older [workflow triggers](workflow_automation.md) and the named `exports` in
+`climate-service.yaml` keep working for existing configurations, and react to the same dataset
+updates, but are due to be retired in favour of pipelines.
+
 A **workflow** is a reusable, parameterized sequence of processes that defines how data is
 transformed or analyzed. A **pipeline** is a managed configuration that connects one workflow to
 its inputs and a destination, governing when it runs, how results are delivered, and how
@@ -306,9 +311,7 @@ check, dry run or mode switch computed while the pipeline changed is refused too
 validation of the current revision publishes the pipeline's export. The run history keeps the
 newest 50 runs, and every older run until it is delivered or run again: a run that is pending,
 running, held, failed or ended without a result stays, whatever its age. A run's process graph is
-kept only until its job holds it. Draft
-records saved before pipelines referenced workflows are read into this shape once, as
-`aggregate_by_features` with the `dhis2` destination; their earlier dry run approves nothing.
+kept only until its job holds it.
 
 **Delete** removes the pipeline and its run history after a confirmation; jobs and deliveries
 already made are kept. The API offers the same: `POST /pipelines` and `POST /pipelines/{id}` to

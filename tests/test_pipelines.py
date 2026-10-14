@@ -203,54 +203,6 @@ def test_a_scheduled_release_is_refused_not_silently_accepted() -> None:
         _spec(delivery={"policy": "scheduled", "release_cron": "0 2 5 * *"})
 
 
-def test_a_legacy_draft_record_reads_into_the_workflow_shape(instance: None) -> None:
-    legacy = {
-        "spec": {
-            "id": "rain-to-dhis2",
-            "source": {"dataset": "rain_monthly"},
-            "destination": {
-                "type": "dhis2",
-                "connection": "local",
-                "organisation_units": {"feature_collection": "districts"},
-                "series": [{"data_element": _ELEMENT}],
-            },
-            "aggregation": {"spatial": {"reducer": "sum"}},
-            "delivery": {"mode": "dry_run", "policy": "scheduled", "release_cron": "0 2 5 * *", "range": "all"},
-        },
-        "created_at": "2026-10-01T00:00:00Z",
-        "validation": {"valid": True, "checked_at": "x", "period_type": "monthly", "checks": []},
-        "dry_run": {"ran_at": "x", "start": "a", "end": "b", "org_units": 2, "report": {"outcome": "dry_run"}},
-        "runs": [
-            {
-                "job_id": "job-1",
-                "mode": "dry_run",
-                "start": "a",
-                "end": "b",
-                "submitted_at": "x",
-                "idempotency_key": "k",
-                "delivery_job_id": "d-1",
-            }
-        ],
-    }
-    store.pipelines_dir().mkdir(parents=True)
-    (store.pipelines_dir() / "rain-to-dhis2.json").write_text(json.dumps(legacy), encoding="utf-8")
-    record = store.get_record("rain-to-dhis2")
-    assert record is not None
-    assert record.spec.workflow == WorkflowReference(
-        id="aggregate_by_features",
-        arguments={"dataset_id": "rain_monthly", "geometries": {"from_features": "districts"}, "method": "sum"},
-    )
-    assert record.spec.destination.plugin == "dhis2"
-    assert record.spec.destination.settings == {"connection": "local", "series": [{"data_element": _ELEMENT}]}
-    assert record.spec.delivery.policy == "manual"
-    assert record.runs[0].run_id == "job-1" and record.runs[0].delivery == "submitted"
-    # The legacy dry run named no bindings, so it approves nothing.
-    assert not service.approved(record)
-
-
-# --- the workflow reference ------------------------------------------------------------------
-
-
 def test_binding_reports_every_problem_with_the_reference(instance: None) -> None:
     with pytest.raises(workflow_binding.WorkflowBindingError, match="not a registered workflow"):
         workflow_binding.bind(WorkflowReference(id="nope"))
@@ -759,7 +711,8 @@ def test_the_core_needs_no_dhis2_identifiers(instance: None, monkeypatch: pytest
     assert "renders only" in _by_id(service.validate_pipeline(live))["delivery"].message
 
     source = Path(service.__file__).parent
-    for module in ("service.py", "runner.py", "workflow.py", "store.py", "routes.py", "forms.py", "exports.py"):
+    core = ("schemas.py", "service.py", "runner.py", "workflow.py", "store.py", "routes.py", "forms.py", "exports.py")
+    for module in core:
         text = (source / module).read_text(encoding="utf-8")
         assert "dhis2" not in text.lower(), module
     for template in ("pipeline_page.html", "pipelines_page.html"):

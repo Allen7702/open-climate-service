@@ -4,6 +4,11 @@ An OCS instance can run an existing openEO workflow when a successful ingestion 
 changes stored data. This is event-driven: it does not guess that an operation has finished by
 scheduling a second cron expression.
 
+> For a new setup, use a [pipeline](web_interface.md#the-pipeline-pages-pipelines) instead: it
+> runs one workflow on the same dataset updates and adds validation, a dry-run gate, delivery
+> modes and run history. Workflow triggers and the named `exports` they deliver through remain
+> supported for existing configurations, but are due to be retired in favour of pipelines.
+
 ## Configure a trigger
 
 Triggers are instance-owned bindings in `climate-service.yaml`:
