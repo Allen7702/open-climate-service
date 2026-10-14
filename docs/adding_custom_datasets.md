@@ -468,17 +468,17 @@ curl -s http://127.0.0.1:9000/stac/catalog.json | jq '.links[] | select(.rel == 
 
 ## Contributing a data source
 
-A data source added to OCS core, or to the community [ocs-plugins](https://github.com/dhis2-chap/ocs-plugins) package, is maintained by the team rather than by one instance, so it needs a little more than a working plugin. Check before you start:
+A data source added to OCS core is maintained by the team rather than by one instance, so it needs a little more than a working plugin. Check before you start:
 
-- **Open access.** The source can be fetched with a free account at most, from the provider itself. Commercial platforms that host open data (Google Earth Engine, Microsoft Planetary Computer) are avoided in core.
-- **Maintained.** The provider still updates and supports the dataset. A source near the end of its record belongs in ocs-plugins, with the end date in its `description`.
+- **Open access.** The source can be fetched with a free account at most, from the provider itself.
+- **Maintained.** The provider still updates and supports the dataset.
 - **A declared licence.** `license` is set from the licence the source names; a non-commercial licence is allowed, but must be declared.
-- **Core or ocs-plugins.** Core holds sources that most instances can use. A source useful to some instances, or one read through a commercial platform, goes to ocs-plugins.
+- **Useful beyond one instance.** Core holds sources that most instances can use. A more specialised source works as well from a `plugins_dir` or an [installable package](installable_plugins.md).
 
 And before opening the PR:
 
 - **One data source per PR.** A plugin shared by several templates of one source (daily and monthly ERA5-Land, say) counts as one.
-- **Ingest a real period.** Run Step 4 on a small extent and open the dataset in the map viewer. Check that units and values are plausible (a July mean of 3 °C is a unit bug) and that the store has the expected time steps.
+- **Ingest a real period.** Run Step 4 on a small extent and open the dataset in the map viewer. Check that units and values are plausible and that the store has the expected time steps.
 - **Tests.** Test `periods()` and `fetch_period()` with the network faked, and run `make lint` and `make test`.
 - **Describe access.** The `description` names the account or key the source needs, and any limit (a short rolling window, a data lag).
 
