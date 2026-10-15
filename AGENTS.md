@@ -37,7 +37,7 @@ docs/
 
 ```bash
 make run      # start uvicorn with --reload
-make fix      # ruff autofix + format
+make fix      # ruff autofix + format, whole tree
 make lint     # ruff check + ruff format + mypy + pyright
 make test     # pytest
 make start    # docker compose up --build
@@ -45,7 +45,7 @@ make start    # docker compose up --build
 
 The `.env` file is required for `make run`. Copy `.env.example` if it exists.
 
-Before handing work back, run `make fix`, then `make lint` and `make test`. All of `make lint` must pass, not only ruff and mypy: pyright runs in strict mode and rejects code mypy accepts, such as a parameter reassigned after its `None` check.
+Before handing work back, fix and format only the files you changed (`uv run ruff check --fix <files>`, `uv run ruff format <files>`), then run `make lint` and `make test`. Do not run `make fix`: it rewrites the whole tree, including a developer's uncommitted work. All of `make lint` must pass, not only ruff and mypy: pyright runs in strict mode and rejects code mypy accepts, such as a parameter reassigned after its `None` check.
 
 ## Working rules
 
