@@ -20,9 +20,20 @@ data_dir: ./data
 # variable that is already set, so `.env` cannot take this back.
 _TEST_INSTANCE = Path(tempfile.mkdtemp(prefix="ocs-test-instance-"))
 atexit.register(shutil.rmtree, _TEST_INSTANCE, ignore_errors=True)
-(_TEST_INSTANCE / "climate-service.yaml").write_text(_TEST_CONFIG, encoding="utf-8")
-os.environ["CLIMATE_SERVICE_CONFIG"] = str(_TEST_INSTANCE / "climate-service.yaml")
+TEST_CONFIG_FILE = _TEST_INSTANCE / "climate-service.yaml"
 TEST_DATA_ROOT = _TEST_INSTANCE / "data"
+# The caller's own value, restored when a session ends, so a process that runs pytest and then
+# carries on (an IDE calling pytest.main(), a notebook) is not left pointing at the test instance.
+_CALLERS_CONFIG = os.environ.get("CLIMATE_SERVICE_CONFIG")
+
+
+def _use_test_instance() -> None:
+    TEST_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TEST_CONFIG_FILE.write_text(_TEST_CONFIG, encoding="utf-8")
+    os.environ["CLIMATE_SERVICE_CONFIG"] = str(TEST_CONFIG_FILE)
+
+
+_use_test_instance()
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -32,6 +43,19 @@ from open_climate_service import config as api_config  # noqa: E402
 from open_climate_service.main import app  # noqa: E402
 from open_climate_service.openeo import earthkit_processes, xclim_processes  # noqa: E402
 from open_climate_service.shared import compute, urls  # noqa: E402
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    # A repeated pytest.main() in one process can reuse this module without running its top
+    # level again, so the test instance is set again here, after the previous session's restore.
+    _use_test_instance()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if _CALLERS_CONFIG is None:
+        os.environ.pop("CLIMATE_SERVICE_CONFIG", None)
+    else:
+        os.environ["CLIMATE_SERVICE_CONFIG"] = _CALLERS_CONFIG
 
 
 @pytest.fixture(autouse=True)

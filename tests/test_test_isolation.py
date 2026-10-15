@@ -8,12 +8,16 @@ module, including one added later with a store path of its own.
 from __future__ import annotations
 
 import importlib
+import os
 import pkgutil
 import sys
 from pathlib import Path
 
+import pytest
+
 import open_climate_service
 
+from . import conftest
 from .conftest import TEST_DATA_ROOT
 
 
@@ -47,3 +51,28 @@ def test_the_suite_runs_against_its_own_instance() -> None:
     from open_climate_service import config as api_config
 
     assert api_config.get_data_root() == TEST_DATA_ROOT.resolve()
+
+
+def test_a_session_gives_the_caller_its_config_back_and_the_next_session_takes_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Restores the real environment afterwards, whatever the hooks do to it.
+    monkeypatch.setenv("CLIMATE_SERVICE_CONFIG", os.environ["CLIMATE_SERVICE_CONFIG"])
+    monkeypatch.setattr(conftest, "_CALLERS_CONFIG", "/home/dev/my-instance/climate-service.yaml")
+
+    conftest.pytest_sessionfinish(session=None, exitstatus=0)  # type: ignore[arg-type]
+    assert os.environ["CLIMATE_SERVICE_CONFIG"] == "/home/dev/my-instance/climate-service.yaml"
+
+    conftest.TEST_CONFIG_FILE.unlink()  # as if the instance were gone by the next session
+    conftest.pytest_sessionstart(session=None)  # type: ignore[arg-type]
+    assert os.environ["CLIMATE_SERVICE_CONFIG"] == str(conftest.TEST_CONFIG_FILE)
+    assert conftest.TEST_CONFIG_FILE.is_file()
+
+
+def test_a_caller_without_a_config_is_left_without_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLIMATE_SERVICE_CONFIG", os.environ["CLIMATE_SERVICE_CONFIG"])
+    monkeypatch.setattr(conftest, "_CALLERS_CONFIG", None)
+
+    conftest.pytest_sessionfinish(session=None, exitstatus=0)  # type: ignore[arg-type]
+
+    assert "CLIMATE_SERVICE_CONFIG" not in os.environ
