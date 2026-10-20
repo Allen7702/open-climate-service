@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import jsonschema
 import numpy as np
 import pandas as pd
 import pytest
@@ -66,7 +67,6 @@ _FORM = {
     "dest.connection": "local",
     "dest.data_set": "N63vVmt2uY0",
     "dest.series.0.data_element": _ELEMENT,
-    "dest.series.0.variable": "",
 }
 
 
@@ -773,6 +773,18 @@ def test_an_incompatible_text_hint_keeps_a_boolean_checkbox() -> None:
     assert fields[0]["widget"] == "checkbox"
 
 
+def test_deprecated_destination_settings_remain_valid_but_are_not_rendered() -> None:
+    schema = dhis2_destination.settings_schema()
+
+    fields = forms.settings_fields(schema, dhis2_destination.pipeline_settings_form())
+
+    series = next(field for field in fields if field["name"] == "series")
+    assert [column["name"] for column in series["columns"]] == ["data_element"]
+    legacy = {**_SETTINGS, "series": [{"data_element": _ELEMENT, "variable": "tp"}]}
+    jsonschema.validate(instance=legacy, schema=schema)
+    assert dhis2_destination.parse_settings(legacy).series[0].variable == "tp"
+
+
 def test_pipeline_settings_form_round_trips_scalar_enum_json_and_repeatable_rows() -> None:
     fields = forms.settings_fields(
         {
@@ -948,6 +960,7 @@ def test_page_creates_validates_and_shows_a_pipeline(client: TestClient, monkeyp
     assert "Configure DHIS2" in create_page.text
     assert "Target" in create_page.text and "Series mapping" in create_page.text
     assert '<select id="dest-connection"' in create_page.text
+    assert 'name="dest.series.0.variable"' not in create_page.text
     for name in ("arg.dataset_id", "arg.geometries", "arg.method", "dest.connection", "dest.series.0.data_element"):
         assert f'name="{name}"' in create_page.text, name
     assert 'name="arg.temporal_extent"' in create_page.text and "Supplied by each run" in create_page.text

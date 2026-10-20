@@ -41,7 +41,11 @@ class Dhis2Series(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     data_element: str = Field(description="DHIS2 data element UID the values are imported into.")
-    variable: str | None = Field(default=None, description="Dataset variable to export; defaults to the dataset's one.")
+    variable: str | None = Field(
+        default=None,
+        description="Deprecated pipeline variable selector; the bound dataset variable is always used.",
+        json_schema_extra={"deprecated": True},
+    )
 
     @field_validator("data_element")
     @classmethod
@@ -136,11 +140,6 @@ def pipeline_settings_form() -> PipelineSettingsForm:
                 label="Data element",
                 help_text="DHIS2 data element UID that receives the values.",
             ),
-            SettingsFormField(
-                name="series.variable",
-                label="Variable",
-                help_text="Optional dataset variable; leave empty to use the dataset's variable.",
-            ),
         ),
     )
 
@@ -175,10 +174,7 @@ def export_definition(settings: dict[str, Any], context: DestinationContext) -> 
         "dataset": dataset.id,
         "connection": parsed.connection,
         "period_type": period_type,
-        "series": [
-            {"select": {"variable": series.variable} if series.variable else {}, "data_element": series.data_element}
-            for series in parsed.series
-        ],
+        "series": [{"select": {}, "data_element": series.data_element} for series in parsed.series],
     }
 
 
@@ -210,24 +206,12 @@ def check_destination(settings: dict[str, Any], context: DestinationContext) -> 
                     id="cadence", status="pass", message=f"{dataset.cadence} data exports as {period_type} periods"
                 )
             )
-        mismatched = [s.variable for s in parsed.series if s.variable is not None and s.variable != dataset.variable]
-        if mismatched:
-            checks.append(
-                DestinationCheck(
-                    id="series",
-                    status="fail",
-                    message=(
-                        f"variable(s) {', '.join(map(repr, mismatched))} are not the dataset's {dataset.variable!r}"
-                    ),
-                )
+        elements = ", ".join(series.data_element for series in parsed.series)
+        checks.append(
+            DestinationCheck(
+                id="series", status="pass", message=f"data element {elements} receives '{dataset.variable}'"
             )
-        else:
-            elements = ", ".join(series.data_element for series in parsed.series)
-            checks.append(
-                DestinationCheck(
-                    id="series", status="pass", message=f"data element {elements} receives '{dataset.variable}'"
-                )
-            )
+        )
     else:
         checks.append(
             DestinationCheck(

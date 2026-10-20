@@ -120,6 +120,8 @@ def settings_fields(
     fields: list[dict[str, Any]] = []
     for name, raw in (schema.get("properties") or {}).items():
         node = _deref(schema, raw if isinstance(raw, dict) else {})
+        if node.get("deprecated") is True:
+            continue
         field: dict[str, Any] = {
             "name": name,
             "title": node.get("title", name),
@@ -149,6 +151,7 @@ def settings_fields(
                     metadata.get(f"{name}.{sub_name}"),
                 )
                 for sub_name, sub in (items.get("properties") or {}).items()
+                if _deref(schema, sub).get("deprecated") is not True
             ]
         else:
             field["kind"] = "json"

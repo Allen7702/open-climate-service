@@ -273,6 +273,8 @@ Top-level field names refer to properties in the settings schema. A dotted name 
 when it is compatible with the property's schema shape; unknown or incompatible hints fall
 back to the safe schema-derived control. Schema properties omitted from the declared sections
 are appended under **Additional settings**, so presentation metadata cannot hide a new setting.
+Properties explicitly marked `deprecated: true` remain valid for stored configuration but are
+not offered for new input.
 
 Choices remain part of the schema's `enum`. A plugin can derive that enum from instance
 configuration each time `destination_settings_schema()` is called, as the built-in DHIS2
