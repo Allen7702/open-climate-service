@@ -14,7 +14,14 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from open_climate_service import config as api_config
-from open_climate_service.exports.base import DestinationCheck, DestinationContext, PipelineDataset
+from open_climate_service.exports.base import (
+    DestinationCheck,
+    DestinationContext,
+    PipelineDataset,
+    PipelineSettingsForm,
+    SettingsFormField,
+    SettingsFormSection,
+)
 from open_climate_service.shared.features import is_dhis2_uid
 from open_climate_service.shared.time import normalise_export_period
 
@@ -29,7 +36,7 @@ _POLYGON_TYPES = {"Polygon", "MultiPolygon"}
 
 
 class Dhis2Series(BaseModel):
-    """One dataset variable going to one DHIS2 data element."""
+    """One workflow result series going to one DHIS2 data element."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -87,6 +94,55 @@ def settings_schema() -> dict[str, Any]:
     if configured:
         schema["properties"]["connection"]["enum"] = configured
     return schema
+
+
+def pipeline_settings_form() -> PipelineSettingsForm:
+    """The complete DHIS2 form presentation; its values and constraints stay in the schema."""
+    return PipelineSettingsForm(
+        title="DHIS2",
+        description="Choose the DHIS2 instance and map each workflow result series to a data element.",
+        sections=(
+            SettingsFormSection(
+                title="Target",
+                description="The connection and optional data set used to validate and deliver the values.",
+                fields=("connection", "data_set"),
+            ),
+            SettingsFormSection(
+                title="Series mapping",
+                description="Map every result series that should be delivered.",
+                fields=("series",),
+            ),
+        ),
+        fields=(
+            SettingsFormField(
+                name="connection",
+                label="Connection",
+                help_text="A named DHIS2 connection from the instance configuration.",
+                widget="select",
+            ),
+            SettingsFormField(
+                name="data_set",
+                label="Data set",
+                help_text="Optional DHIS2 data set UID, checked for period type and assignment.",
+            ),
+            SettingsFormField(
+                name="series",
+                label="Series",
+                help_text="Fill the empty row to add a mapping; save to get another.",
+                widget="rows",
+            ),
+            SettingsFormField(
+                name="series.data_element",
+                label="Data element",
+                help_text="DHIS2 data element UID that receives the values.",
+            ),
+            SettingsFormField(
+                name="series.variable",
+                label="Variable",
+                help_text="Optional dataset variable; leave empty to use the dataset's variable.",
+            ),
+        ),
+    )
 
 
 def parse_settings(settings: dict[str, Any]) -> Dhis2DestinationSettings:
