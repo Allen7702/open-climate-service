@@ -236,7 +236,7 @@ def read_settings(form: dict[str, str], fields: list[dict[str, Any]]) -> dict[st
             while any(key.startswith(f"{prefix}{index}.") for key in form):
                 try:
                     row: dict[str, Any] = {}
-                    has_value = False
+                    has_value = f"{prefix}{index}.__present" in form
                     for column in field["columns"]:
                         key = f"dest.{name}.{index}.{column['name']}"
                         raw = form.get(key, "").strip()
@@ -277,14 +277,19 @@ def argument_value(arguments: dict[str, Any], field: dict[str, Any]) -> str:
         return str(value.get("from_features", ""))
     if field["kind"] in ("json", "interval") or isinstance(value, (dict, list)):
         return json.dumps(value)
-    return str(value).lower() if isinstance(value, bool) else str(value)
+    if isinstance(value, bool) and field["kind"] == "boolean":
+        return str(value).lower()
+    return str(value)
 
 
 def setting_rows(settings: dict[str, Any], field: dict[str, Any]) -> list[dict[str, Any]]:
     """The rows a list setting shows: the stored ones plus room for one more."""
     stored = settings.get(field["name"])
     rows = [row for row in stored if isinstance(row, dict)] if isinstance(stored, list) else []
-    return [*rows, *({} for _ in range(EXTRA_ROWS))]
+    return [
+        *({"values": row, "existing": True} for row in rows),
+        *({"values": {}, "existing": False} for _ in range(EXTRA_ROWS)),
+    ]
 
 
 def setting_value(settings: dict[str, Any], field: dict[str, Any]) -> str:
@@ -294,4 +299,6 @@ def setting_value(settings: dict[str, Any], field: dict[str, Any]) -> str:
         return ""
     if field["kind"] == "json":
         return json.dumps(value)
-    return str(value).lower() if isinstance(value, bool) else str(value)
+    if isinstance(value, bool) and field["widget"] == "checkbox":
+        return str(value).lower()
+    return str(value)

@@ -41,11 +41,6 @@ class Dhis2Series(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     data_element: str = Field(description="DHIS2 data element UID the values are imported into.")
-    variable: str | None = Field(
-        default=None,
-        description="Deprecated pipeline variable selector; the bound dataset variable is always used.",
-        json_schema_extra={"deprecated": True},
-    )
 
     @field_validator("data_element")
     @classmethod

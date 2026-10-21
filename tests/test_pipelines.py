@@ -14,7 +14,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import jsonschema
 import numpy as np
 import pandas as pd
 import pytest
@@ -773,16 +772,25 @@ def test_an_incompatible_text_hint_keeps_a_boolean_checkbox() -> None:
     assert fields[0]["widget"] == "checkbox"
 
 
-def test_deprecated_destination_settings_remain_valid_but_are_not_rendered() -> None:
-    schema = dhis2_destination.settings_schema()
-
-    fields = forms.settings_fields(schema, dhis2_destination.pipeline_settings_form())
-
-    series = next(field for field in fields if field["name"] == "series")
-    assert [column["name"] for column in series["columns"]] == ["data_element"]
+def test_dhis2_destination_rejects_the_removed_variable_selector() -> None:
     legacy = {**_SETTINGS, "series": [{"data_element": _ELEMENT, "variable": "tp"}]}
-    jsonschema.validate(instance=legacy, schema=schema)
-    assert dhis2_destination.parse_settings(legacy).series[0].variable == "tp"
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        dhis2_destination.parse_settings(legacy)
+
+
+def test_deprecated_plugin_settings_are_not_rendered() -> None:
+    fields = forms.settings_fields(
+        {
+            "type": "object",
+            "properties": {
+                "current": {"type": "string"},
+                "legacy": {"type": "string", "deprecated": True},
+            },
+        }
+    )
+
+    assert [field["name"] for field in fields] == ["current"]
 
 
 def test_pipeline_settings_form_round_trips_scalar_enum_json_and_repeatable_rows() -> None:
@@ -825,7 +833,74 @@ def test_pipeline_settings_form_round_trips_scalar_enum_json_and_repeatable_rows
     by_name = {field["name"]: field for field in fields}
     assert forms.setting_value(submitted, by_name["enabled"]) == "false"
     assert forms.setting_value(submitted, by_name["options"]) == '{"precision": 2}'
-    assert forms.setting_rows(submitted, by_name["series"])[0] == {"name": "rain", "factor": 1.5}
+    assert forms.setting_rows(submitted, by_name["series"])[0] == {
+        "values": {"name": "rain", "factor": 1.5},
+        "existing": True,
+    }
+
+
+def test_pipeline_settings_form_preserves_an_existing_false_only_row() -> None:
+    fields = forms.settings_fields(
+        {
+            "type": "object",
+            "properties": {
+                "switches": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"enabled": {"type": "boolean"}},
+                    },
+                }
+            },
+        }
+    )
+    rendered = forms.setting_rows({"switches": [{"enabled": False}]}, fields[0])
+
+    submitted = forms.read_settings(
+        {
+            "dest.switches.0.__present": "true",
+            "dest.switches.0.enabled.__present": "true",
+            "dest.switches.1.enabled.__present": "true",
+        },
+        fields,
+    )
+
+    assert rendered == [
+        {"values": {"enabled": False}, "existing": True},
+        {"values": {}, "existing": False},
+    ]
+    assert submitted == {"switches": [{"enabled": False}]}
+
+
+def test_boolean_enums_use_the_same_text_as_their_select_options() -> None:
+    setting = forms.settings_fields(
+        {"type": "object", "properties": {"enabled": {"type": "boolean", "enum": [True, False]}}}
+    )[0]
+    argument = forms.parameter_fields([{"name": "enabled", "schema": {"type": "boolean", "enum": [True, False]}}])[0]
+
+    assert setting["widget"] == "select"
+    assert forms.setting_value({"enabled": False}, setting) == "False"
+    assert forms.argument_value({"enabled": False}, argument) == "False"
+
+
+def test_an_empty_required_enum_does_not_populate_a_spare_row() -> None:
+    fields = forms.settings_fields(
+        {
+            "type": "object",
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"mode": {"type": "string", "enum": ["append", "replace"]}},
+                        "required": ["mode"],
+                    },
+                }
+            },
+        }
+    )
+
+    assert forms.read_settings({"dest.rules.0.mode": ""}, fields) == {}
 
 
 def test_the_core_needs_no_dhis2_identifiers(instance: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -949,6 +1024,59 @@ def client(instance: None) -> TestClient:
     from open_climate_service.main import app
 
     return TestClient(app)
+
+
+def test_repeatable_plugin_fields_render_stored_rows_and_an_empty_spare_row(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _RowsPlugin(_DropPlugin):
+        id = "rows"
+
+        def destination_settings_schema(self) -> dict[str, Any]:
+            return {
+                "type": "object",
+                "properties": {
+                    "enabled": {"type": "boolean", "enum": [True, False]},
+                    "switches": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"enabled": {"type": "boolean"}},
+                        },
+                    },
+                    "rules": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"mode": {"type": "string", "enum": ["append", "replace"]}},
+                            "required": ["mode"],
+                        },
+                    },
+                },
+            }
+
+        def pipeline_settings_form(self) -> None:
+            return None
+
+    plugin = _RowsPlugin()
+    monkeypatch.setattr(service, "destination_plugins", lambda: {"rows": plugin})
+    record = store.create_record(
+        _spec(
+            id="row-form",
+            destination={
+                "plugin": "rows",
+                "settings": {"enabled": False, "switches": [{"enabled": False}]},
+            },
+        )
+    )
+
+    page = client.get(f"/pipelines/{record.spec.id}/edit", headers={"Accept": "text/html"})
+
+    assert page.status_code == 200
+    assert '<option value="False" selected>False</option>' in page.text
+    assert 'name="dest.switches.0.__present" value="true"' in page.text
+    assert 'name="dest.switches.1.__present"' not in page.text
+    assert 'name="dest.rules.0.mode">\n                        <option value="">(select)</option>' in page.text
 
 
 def test_page_creates_validates_and_shows_a_pipeline(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

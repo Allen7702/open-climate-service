@@ -178,19 +178,20 @@
                   {% for row in f.rows %}
                   {% set i = loop.index0 %}
                   <div class="form-grid repeatable-row">
+                    {% if row['existing'] %}<input type="hidden" name="dest.{{ f.name }}.{{ i }}.__present" value="true" />{% endif %}
                     {% for c in f.columns %}
                     <div class="field">
                       <label for="dest-{{ f.name }}-{{ i }}-{{ c.name }}">{{ c.title }}{% if not c.required %} <span class="note">optional</span>{% endif %}</label>
                       {% if c.widget == 'select' %}
                       <select id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}">
-                        {% if not c.required %}<option value="">(not set)</option>{% endif %}
-                        {% for option in c.options %}<option value="{{ option.value }}" {% if row.get(c.name) | string == option.value | string %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+                        <option value="">{{ '(select)' if c.required else '(not set)' }}</option>
+                        {% for option in c.options %}<option value="{{ option.value }}" {% if row['values'].get(c.name) | string == option.value | string %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
                       </select>
                       {% elif c.widget == 'checkbox' %}
                       <input type="hidden" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}.__present" value="true" />
-                      <input type="checkbox" id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}" value="true" {% if row.get(c.name) %}checked{% endif %} />
+                      <input type="checkbox" id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}" value="true" {% if row['values'].get(c.name) %}checked{% endif %} />
                       {% else %}
-                      <input type="{{ 'number' if c.kind in ['integer', 'number'] else 'text' }}" {% if c.kind == 'number' %}step="any"{% endif %} id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}" value="{{ row.get(c.name) if row.get(c.name) is not none else '' }}" />
+                      <input type="{{ 'number' if c.kind in ['integer', 'number'] else 'text' }}" {% if c.kind == 'number' %}step="any"{% endif %} id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}" value="{{ row['values'].get(c.name) if row['values'].get(c.name) is not none else '' }}" />
                       {% endif %}
                       {% if c.description %}<span class="hint">{{ c.description }}</span>{% endif %}
                     </div>
