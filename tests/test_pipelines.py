@@ -591,6 +591,40 @@ def test_validation_does_not_claim_to_reuse_a_paused_schedule(instance: None, mo
     assert check.status == "skip" and "paused" in check.message and "0 6 * * *" in check.message
 
 
+def test_validation_reads_the_scheduler_switch_the_way_the_scheduler_does(
+    instance: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A string from environment substitution still enables the clock, so validation says so too."""
+    _dhis2(monkeypatch)
+    api_config._cache["scheduler"] = {"enabled": "true"}  # type: ignore[index]
+    _schedule("rain_monthly", "0 6 * * *")
+    check = _by_id(service.validate_pipeline(store.create_record(_spec())))["schedule"]
+    assert check.status == "pass" and "0 6 * * *" in check.message
+
+
+def test_validation_reports_an_invalid_scheduler_configuration(instance: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    _dhis2(monkeypatch)
+    api_config._cache["scheduler"] = {  # type: ignore[index]
+        "enabled": True,
+        "dataset_sync": [{"dataset_id": "rain_monthly", "cron": "0 6 * * *"}],
+    }
+    _schedule("rain_monthly", "0 6 * * *")
+    check = _by_id(service.validate_pipeline(store.create_record(_spec())))["schedule"]
+    assert check.status == "skip" and "scheduler.dataset_sync is no longer supported" in check.message
+
+
+def test_validation_reports_an_unreadable_schedule_store(instance: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from open_climate_service.scheduler import store as schedule_store
+
+    _dhis2(monkeypatch)
+    api_config._cache["scheduler"] = {"enabled": True}  # type: ignore[index]
+    path = schedule_store.schedules_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    check = _by_id(service.validate_pipeline(store.create_record(_spec())))["schedule"]
+    assert check.status == "skip" and "cannot be read" in check.message and "not valid JSON" in check.message
+
+
 def test_validation_names_the_source_schedule_and_the_delivery_policy(
     instance: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

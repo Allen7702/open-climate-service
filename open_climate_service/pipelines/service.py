@@ -291,14 +291,18 @@ def _check_schedule(bound: BoundWorkflow) -> Check:
     """Report how the source datasets are kept current. The pipeline owns no sync clock of its own.
 
     Schedules live in the operator's JSON store, one per dataset; the instance switch that lets
-    the clock run stays in ``climate-service.yaml``. A paused entry is reported, not counted.
+    the clock run stays in ``climate-service.yaml`` and is read the way the scheduler reads it,
+    so the two agree on what "enabled" means. A paused entry is reported, not counted.
     """
     from open_climate_service.scheduler import store as schedule_store
+    from open_climate_service.scheduler.config import get_scheduler_config
 
-    raw = api_config.get_config().get("scheduler", {})
-    enabled = isinstance(raw, dict) and raw.get("enabled") is True
     if not bound.dataset_ids:
         return Check(id="schedule", status="skip", message="the workflow reads no managed dataset")
+    try:
+        enabled = get_scheduler_config().enabled
+    except ValueError as exc:
+        return Check(id="schedule", status="skip", message=f"the scheduler configuration is invalid: {exc}")
     try:
         stored = {item.dataset_id: item for item in schedule_store.list_schedules()}
     except schedule_store.ScheduleStoreUnreadable as exc:
