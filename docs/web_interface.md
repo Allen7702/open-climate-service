@@ -180,10 +180,15 @@ data elements and organisation-unit assignments. The pipeline core knows none of
 
 The create form is driven by the same metadata: choose a workflow and a destination, and the form
 shows a field per workflow parameter (a dataset list, a feature collection list, a choice, a
-value, or JSON for anything else) and per destination setting. **Create pipeline** on a dataset's
+value, or JSON for anything else) and per destination setting. A setting whose values live at
+the destination is searched there: for DHIS2, the data set and each data element are chosen by
+name from the connected instance, the data elements narrowed to the chosen data set, and the
+UID is what gets stored; an id can still be pasted. **Create pipeline** on a dataset's
 page opens the form with that dataset bound. **Save** validates before it stores and refuses a
 pipeline that fails any check, keeping the form. The validation also reports how each source
-dataset is kept current: the pipeline owns no sync clock. **Re-check** repeats the validation.
+dataset is kept current: the pipeline owns no sync clock, and resolves the names of the stored
+ids, which the pipeline's page and its edit form show beside them. **Re-check** repeats the
+validation.
 
 A **dry run** executes the exact graph a run would submit over a bounded range, renders it through
 the destination and, where the destination supports it, submits it as a dry run (DHIS2 validates

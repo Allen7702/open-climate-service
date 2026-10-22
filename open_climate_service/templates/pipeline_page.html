@@ -52,7 +52,32 @@
               <dt>Created</dt><dd>{{ created_at }}</dd>
             </dl>
             <h4>Destination settings</h4>
+            {% if settings_items %}
+            <dl class="facts settings-facts">
+              {% for item in settings_items %}
+              <dt>{{ item.title }}</dt>
+              <dd>
+                {% if item.rows is not none %}
+                {% if item.rows %}
+                <ul class="plain-list settings-rows">
+                  {% for row in item.rows %}
+                  <li>{% for cell in row %}<span class="settings-cell"><span class="note">{{ cell.title }}</span> {% if cell.label %}{{ cell.label }} <span class="mono note">{{ cell.value }}</span>{% else %}<span class="mono">{{ cell.value }}</span>{% endif %}</span>{% endfor %}</li>
+                  {% endfor %}
+                </ul>
+                {% else %}<span class="note">none</span>{% endif %}
+                {% elif item.label %}{{ item.label }} <span class="mono note">{{ item.value }}</span>
+                {% else %}<span class="mono">{{ item.value }}</span>{% endif %}
+              </dd>
+              {% endfor %}
+            </dl>
+            <p class="note">Names were read from the destination at the last validation; the ids are what the pipeline stores.</p>
+            <details class="settings-json">
+              <summary>Settings as JSON</summary>
+              <pre class="config-code"><code>{{ settings }}</code></pre>
+            </details>
+            {% else %}
             <pre class="config-code"><code>{{ settings }}</code></pre>
+            {% endif %}
             {% if export %}
             <h4>Export definition</h4>
             <p class="note">Compiled by the destination plugin at the last validation. Runs save, and deliveries send, through this export, named after the pipeline.</p>
@@ -109,11 +134,12 @@
             </div>
             {% endif %}
             {% if dry_run.sample %}
+            <p class="note">A sample of {{ dry_run.sample | length }} of the {{ dry_run.values }} values, as the destination picked them; the whole payload was {% if dry_run.report %}submitted{% else %}rendered{% endif %}.</p>
             {% set columns = dry_run.sample[0].keys() | list %}
             <div class="table-wrap">
               <table>
                 <thead><tr>{% for k in columns %}<th>{{ k }}</th>{% endfor %}</tr></thead>
-                <tbody>{% for v in dry_run.sample %}<tr>{% for k in columns %}<td class="mono">{{ v[k] }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+                <tbody>{% for v in dry_run.sample %}<tr>{% for k in columns %}{% set cell = v[k] %}<td>{% if cell is mapping %}<span title="{{ cell.value }}">{{ cell.label }}</span>{% else %}<span class="mono">{{ cell }}</span>{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody>
               </table>
             </div>
             {% endif %}

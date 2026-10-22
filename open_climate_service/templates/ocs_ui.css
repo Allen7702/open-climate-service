@@ -1083,6 +1083,68 @@ button.primary:disabled {
 .repeatable-field > .hint {
   margin-top: var(--spacers-dp4);
 }
+/* A lookup field: a text input the script turns into a search over the destination. Without the
+   script it is the plain input it started as, and the stored id is typed by hand. */
+.lookup {
+  position: relative;
+}
+.lookup-results {
+  position: absolute;
+  inset-inline: 0;
+  top: 100%;
+  z-index: 20;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--colors-white);
+  border: 1px solid var(--colors-grey500);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+.lookup-results[hidden] {
+  display: none;
+}
+.lookup-results li {
+  padding: var(--spacers-dp8);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lookup-results li + li {
+  border-top: 1px solid var(--colors-grey200);
+}
+.lookup-results li[aria-selected="true"],
+.lookup-results li:hover {
+  background: var(--colors-grey100);
+}
+.lookup-results li > small {
+  color: var(--colors-grey700);
+}
+.lookup-results .lookup-status {
+  cursor: default;
+  color: var(--colors-grey700);
+}
+.lookup-results .lookup-error {
+  cursor: default;
+  color: var(--colors-red600);
+}
+.settings-rows li + li {
+  margin-top: var(--spacers-dp4);
+}
+.settings-cell + .settings-cell {
+  margin-inline-start: var(--spacers-dp12);
+}
+.settings-json {
+  margin-top: var(--spacers-dp8);
+}
+.settings-json > summary {
+  cursor: pointer;
+  font-size: var(--font-size-small);
+  color: var(--colors-grey700);
+}
 .pipeline-form .form-grid,
 .record-form .form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -103,7 +103,7 @@
             </div>
           </form>
 
-          <form method="post" action="{{ mount }}/pipelines{% if editing %}/{{ editing }}{% endif %}" class="pipeline-form">
+          <form method="post" action="{{ mount }}/pipelines{% if editing %}/{{ editing }}{% endif %}" class="pipeline-form" data-lookup-url="{{ mount }}/pipelines/lookups/{{ destination.id }}">
             <input type="hidden" name="workflow" value="{{ workflow.id }}" />
             <input type="hidden" name="destination" value="{{ destination.id }}" />
             {% if editing %}<input type="hidden" name="revision" value="{{ revision or '' }}" />{% endif %}
@@ -190,6 +190,10 @@
                       {% elif c.widget == 'checkbox' %}
                       <input type="hidden" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}.__present" value="true" />
                       <input type="checkbox" id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}" value="true" {% if row['values'].get(c.name) %}checked{% endif %} />
+                      {% elif c.widget == 'lookup' %}
+                      <div class="lookup">
+                        <input type="text" id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}" value="{{ row['values'].get(c.name) if row['values'].get(c.name) is not none else '' }}" data-lookup="{{ c.lookup }}" data-label="{{ row['labels'].get(c.name, '') }}" placeholder="Search by name or paste an id" />
+                      </div>
                       {% else %}
                       <input type="{{ 'number' if c.kind in ['integer', 'number'] else 'text' }}" {% if c.kind == 'number' %}step="any"{% endif %} id="dest-{{ f.name }}-{{ i }}-{{ c.name }}" name="dest.{{ f.name }}.{{ i }}.{{ c.name }}" value="{{ row['values'].get(c.name) if row['values'].get(c.name) is not none else '' }}" />
                       {% endif %}
@@ -214,6 +218,10 @@
                   <input type="checkbox" id="dest-{{ f.name }}" name="dest.{{ f.name }}" value="true" {% if f.value == 'true' %}checked{% endif %} />
                   {% elif f.widget in ['json', 'textarea'] %}
                   <textarea id="dest-{{ f.name }}" name="dest.{{ f.name }}" rows="3" class="mono" placeholder="JSON">{{ f.value }}</textarea>
+                  {% elif f.widget == 'lookup' %}
+                  <div class="lookup">
+                    <input type="text" id="dest-{{ f.name }}" name="dest.{{ f.name }}" value="{{ f.value }}" data-lookup="{{ f.lookup }}" data-label="{{ f.label }}" {% if f.required %}required{% endif %} placeholder="Search by name or paste an id" />
+                  </div>
                   {% else %}
                   <input type="{{ 'number' if f.kind in ['integer', 'number'] else 'text' }}" {% if f.kind == 'number' %}step="any"{% endif %} id="dest-{{ f.name }}" name="dest.{{ f.name }}" value="{{ f.value }}" {% if f.required %}required{% endif %} />
                   {% endif %}
@@ -247,6 +255,9 @@
               {% if editing %}<a class="button-link" href="{{ mount }}/pipelines/{{ editing }}">Cancel</a>{% endif %}
             </div>
           </form>
+          <script>
+{{ lookup_script | safe }}
+          </script>
           {% endif %}
         </section>
         {% endif %}

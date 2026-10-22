@@ -201,6 +201,7 @@ def validate_pipeline(record: PipelineRecord) -> ValidationResult:
     checks: list[Check] = []
     bound: BoundWorkflow | None = None
     export: dict[str, Any] | None = None
+    labels: dict[str, dict[str, str]] = {}
 
     try:
         bound = workflow_binding.bind(spec.workflow)
@@ -239,6 +240,7 @@ def validate_pipeline(record: PipelineRecord) -> ValidationResult:
             context = destination_context(spec, bound)
             for check in plugin.check_destination(spec.destination.settings, context):
                 checks.append(Check(id=check.id, status=check.status, message=check.message))
+            labels = settings_labels(plugin, spec.destination.settings)
         checks.append(_check_schedule(bound))
 
     checks.append(_check_configuration(spec))
@@ -250,8 +252,36 @@ def validate_pipeline(record: PipelineRecord) -> ValidationResult:
         checked_at=utc_now().isoformat(),
         bindings=digest,
         export=export,
+        labels=labels,
         checks=checks,
     )
+
+
+def settings_fields(plugin: BaseExportPlugin) -> list[dict[str, Any]]:
+    """The plugin's settings as form fields: the one reading of its schema and presentation."""
+    from open_climate_service.pipelines import forms
+
+    return forms.settings_fields(plugin.destination_settings_schema(), plugin.pipeline_settings_form())
+
+
+def settings_labels(plugin: BaseExportPlugin, settings: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """How the lookup settings read at the destination, by field path then value.
+
+    A lookup the destination cannot answer is left out, and logged: the labels are a courtesy
+    for the pages, never a check, and the value stays usable by itself.
+    """
+    from open_climate_service.pipelines import forms
+
+    labels: dict[str, dict[str, str]] = {}
+    for path, lookup, values in forms.lookup_values(settings, settings_fields(plugin)):
+        try:
+            resolved = plugin.lookup_labels(lookup, settings, values)
+        except Exception as exc:  # the destination, its connection, or the plugin
+            logger.warning("Could not resolve '%s' labels for plugin '%s': %s", lookup, plugin.id, exc)
+            continue
+        if resolved:
+            labels[path] = {value: resolved[value] for value in values if value in resolved}
+    return labels
 
 
 def _check_inputs(bound: BoundWorkflow, *, on_update: bool) -> Check:
@@ -398,7 +428,7 @@ def dry_run_pipeline(record: PipelineRecord, start: str, end: str) -> DryRunResu
         bindings=digest,
         values=rendered.record_count,
         periods=sorted(set(rendered.periods or ())),
-        sample=plugin.preview(rendered.content),
+        sample=plugin.preview(rendered.content, spec.destination.settings, destination_context(spec, bound)),
         report=report,
         rendered_only=report is None,
     )
