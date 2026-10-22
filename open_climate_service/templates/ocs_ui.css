@@ -643,6 +643,11 @@ button:disabled {
 .page-title h2 {
   margin: 0;
 }
+.pipeline-edit-action {
+  margin-left: auto;
+  align-self: center;
+  white-space: nowrap;
+}
 /* Under the title, because when a dataset starts and ends is the first thing a reader checks. */
 .page-coverage {
   display: flex;
@@ -1130,6 +1135,56 @@ button.primary:disabled {
 .lookup-results .lookup-error {
   cursor: default;
   color: var(--colors-red600);
+}
+/* A panel that folds: its header carries the verdict, so a green one can stay closed and a red
+   one opens by itself. Native details, so it works without the script and keeps its anchor. */
+.panel-fold {
+  padding: 0;
+}
+.panel-fold > .fold-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacers-dp8);
+  padding: var(--spacers-dp12) var(--spacers-dp16);
+  cursor: pointer;
+  list-style: none;
+  border-left: 4px solid var(--colors-grey500);
+  border-radius: var(--radius);
+}
+.panel-fold > .fold-summary::-webkit-details-marker {
+  display: none;
+}
+.panel-fold > .fold-summary > h3 {
+  margin: 0;
+}
+.panel-fold[open] > .fold-summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.fold-marker {
+  width: 8px;
+  height: 8px;
+  margin-inline-end: var(--spacers-dp4);
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+.panel-fold[open] > .fold-summary > .fold-marker {
+  transform: rotate(45deg);
+}
+.fold-pass {
+  border-left-color: var(--colors-green800);
+  background: var(--colors-green100);
+}
+.fold-fail {
+  border-left-color: var(--colors-red600);
+  background: var(--colors-red050);
+}
+.panel-fold > .fold-body {
+  padding: var(--spacers-dp16);
+  border-top: 1px solid var(--colors-grey300);
 }
 .settings-rows li + li {
   margin-top: var(--spacers-dp4);

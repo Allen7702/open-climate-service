@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from textwrap import dedent
@@ -39,6 +39,26 @@ def _template_source(name: str) -> str:
 
 
 _env = jinja2.Environment(loader=jinja2.FunctionLoader(_template_source), autoescape=True)
+
+
+def _when(value: Any) -> str:
+    """An ISO 8601 timestamp, or a datetime, as ``YYYY-MM-DD HH:MM UTC``; anything else as it came."""
+    if value is None or value == "":
+        return ""
+    moment = value
+    if isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    if not isinstance(moment, datetime):
+        return str(value)
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(UTC)
+    return moment.strftime("%Y-%m-%d %H:%M UTC")
+
+
+_env.filters["when"] = _when
 
 _cache: dict[str, jinja2.Template] = {}
 

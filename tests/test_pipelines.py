@@ -1272,6 +1272,37 @@ def test_validation_keeps_lookup_labels_and_the_pages_show_them(
     assert 'OCS test <span class="mono note">' not in shown.text
 
 
+def test_page_folds_a_green_validation_and_opens_a_red_one(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _dhis2(monkeypatch)
+    record = store.create_record(_spec(), service.validate_pipeline(store.create_record(_spec(id="probe"))))
+    assert record.validation is not None and record.validation.valid
+    page = client.get(f"/pipelines/{record.spec.id}", headers={"Accept": "text/html"}).text
+    title = page.split('<div class="page-title">', 1)[1].split("</div>", 1)[0]
+    assert 'class="button-link primary pipeline-edit-action"' in title
+    assert ">Edit pipeline</a>" in title
+    assert 'class="chip' not in title, "status belongs to the detail cards below the title"
+    assert '<details class="panel panel-fold" id="validation" >' in page, "a valid pipeline's checks stay folded"
+    assert '<summary class="fold-summary fold-pass">' in page
+    assert '<details class="panel panel-fold" id="dry-run" open>' in page, "no dry run yet, so its form shows"
+    assert '<summary class="fold-summary fold-none">' in page and '<span class="chip">not run</span>' in page
+    assert '<details class="panel panel-fold" id="delete">' in page
+    assert '<details class="panel panel-fold" id="about">' in page, "the read-only pipeline facts fold too"
+    assert '<h3 id="about-title">Definition</h3>' in page
+    assert '<h3 id="about-title">Pipeline</h3>' not in page
+    assert "aggregate_by_features to DHIS2, revision 1, created 20" in page
+    assert f"{record.validation.checked_at[:10]} {record.validation.checked_at[11:16]} UTC" in page
+    assert record.validation.checked_at not in page, "timestamps are shown as date, time and UTC"
+
+    broken = store.create_record(
+        _spec(id="broken", destination={"plugin": "dhis2", "settings": {**_SETTINGS, "connection": "nope"}})
+    )
+    store.install_validation(broken, service.validate_pipeline(broken), judged_revision=broken.revision)
+    store.save_record(broken)
+    page = client.get("/pipelines/broken", headers={"Accept": "text/html"}).text
+    assert '<details class="panel panel-fold" id="validation" open>' in page
+    assert '<summary class="fold-summary fold-fail">' in page and "check(s) failed" in page
+
+
 def test_page_creates_validates_and_shows_a_pipeline(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     _dhis2(monkeypatch)
     page = client.get("/pipelines", headers={"Accept": "text/html"})
