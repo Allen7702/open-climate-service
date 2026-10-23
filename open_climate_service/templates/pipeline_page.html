@@ -20,12 +20,16 @@
     <div class="layout">
       {{ nav }}
 
-      <main id="content">
+      <main id="content"{% if diagram %} class="automation-wide"{% endif %}>
         <p class="breadcrumb"><a href="{{ mount }}/pipelines">Pipelines</a> / {{ spec.id }}</p>
         <div class="page-title">
           <h2 tabindex="-1">{{ title }}</h2>
           {% if not read_only %}<a class="button-link primary pipeline-edit-action" href="{{ mount }}/pipelines/{{ spec.id }}/edit">Edit pipeline</a>{% endif %}
         </div>
+
+        {% if diagram %}
+        {% include "_automation_graph.html" %}
+        {% endif %}
 
         <ol class="pipeline-flow" aria-label="Pipeline flow">
           <li><span class="flow-label">Workflow</span><strong>{{ spec.workflow.id }}</strong></li>
