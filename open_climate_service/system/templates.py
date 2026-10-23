@@ -499,7 +499,12 @@ def render_dataset_page(
             from open_climate_service.scheduler.service import get_scheduler_service
 
             status = get_scheduler_service().status()
-            scheduler_status = {"enabled": status.enabled, "running": status.running, "timezone": status.timezone}
+            scheduler_status = {
+                "enabled": status.enabled,
+                "running": status.running,
+                "clock": status.clock is not None,
+                "timezone": status.timezone,
+            }
             scheduler_reload_error = status.reload_error
             matching = next((row for row in status.schedules if row.dataset_id == record.dataset_id), None)
             schedule = matching.model_dump(mode="json") if matching is not None else None

@@ -110,9 +110,11 @@ dataset cannot take a schedule, and the API refuses it with the reason.
 Each row shows a readable check time (or cron for a custom schedule) and timezone,
 its status (scheduled, paused, or unable to run
 with the reason), the next check and the last one. Check
-state is kept in memory and resets on restart; the sync jobs a check submits are durable and
-linked from the row. The timezone is the instance's `scheduler.timezone`. When the scheduler is
-disabled, schedules can still be saved and are listed, and the page explains that an operator
+results are kept in the data directory, so they survive a restart and show on every process
+that shares it; the sync jobs a check submits are linked from the row. The timezone is the
+instance's `scheduler.timezone`. When the clock runs in another process, such as a writable
+worker beside a read-only public instance, the page says so. When no process runs it,
+schedules can still be saved and are listed, and the page explains that an operator
 enables checks by setting `enabled: true` under `scheduler:` in `climate-service.yaml` and
 restarting OCS. If a change cannot be applied, the page shows why.
 ### The pipeline pages (`/pipelines`)
