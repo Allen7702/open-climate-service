@@ -1,7 +1,7 @@
 """Public contract for export renderers and optional delivery."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -238,14 +238,21 @@ class BaseExportPlugin(ABC):
         return []
 
     def preview(
-        self, content: bytes, settings: dict[str, Any], context: DestinationContext, limit: int = 5
+        self,
+        content: bytes,
+        settings: dict[str, Any],
+        context: DestinationContext,
+        labels: Mapping[str, Mapping[str, str]] | None = None,
+        limit: int = 5,
     ) -> list[dict[str, Any]]:
         """A few rendered records for a dry-run summary; empty when the payload has no row shape.
 
         A cell is a scalar, or ``{"value": ..., "label": ...}`` when the plugin can say how an
-        identifier reads: the page shows the label with the value beside it. Names the plugin
-        has at hand, such as a bound feature collection's, cost nothing; the destination may be
-        asked for the rest, with its failure tolerated.
+        identifier reads: the page shows the label with the value beside it. ``labels`` are the
+        names ``lookup_labels`` resolved at the last validation, by setting path and value, so
+        the plugin need not ask the destination again for those. Names the plugin has at hand,
+        such as a bound feature collection's, cost nothing; the destination may be asked for the
+        rest, with its failure tolerated.
         """
         return []
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +42,8 @@ _POLYGON_TYPES = {"Polygon", "MultiPolygon"}
 _LOOKUPS = {"data_sets": "dataSets", "data_elements": "dataElements"}
 _LOOKUP_PAGE = 20
 _LABEL_CHUNK = 50
+# The settings path of each series' data element: its form field, and where validation keeps its labels.
+_DATA_ELEMENT_LABELS = "series.data_element"
 
 
 class Dhis2Series(BaseModel):
@@ -145,7 +147,7 @@ def pipeline_settings_form() -> PipelineSettingsForm:
                 widget="rows",
             ),
             SettingsFormField(
-                name="series.data_element",
+                name=_DATA_ELEMENT_LABELS,
                 label="Data element",
                 help_text="The aggregate data element that receives the values; search by name or UID.",
                 widget="lookup",
@@ -448,7 +450,11 @@ def _check_dhis2_metadata(
 
 
 def preview(
-    content: bytes, settings: dict[str, Any], context: DestinationContext, limit: int = 5
+    content: bytes,
+    settings: dict[str, Any],
+    context: DestinationContext,
+    labels: Mapping[str, Mapping[str, str]] | None = None,
+    limit: int = 5,
 ) -> list[dict[str, Any]]:
     """A sample of a rendered dataValueSet, organisation units and data elements by name.
 
@@ -456,7 +462,8 @@ def preview(
     order. The sample instead takes the first value of each unit, units by name as DHIS2 lists
     them, before a second value of any, so a reader sees the extent of the delivery rather than
     one unit's months. Organisation unit names come from the bound feature collection, which
-    stores what DHIS2 sent with the geometry; data element names are asked of DHIS2, and left
+    stores what DHIS2 sent with the geometry. Data element names come from ``labels``, as the
+    last validation resolved them; DHIS2 is asked only for any it did not, and a name is left
     out when it cannot answer.
     """
     try:
@@ -469,11 +476,13 @@ def preview(
     for collection_id in context.feature_collections:
         org_units.update(feature_names(collection_id))
     rows = _spread_over_org_units(values, limit, org_units)
-    elements: dict[str, str] = {}
+    known = (labels or {}).get(_DATA_ELEMENT_LABELS, {})
     uids = sorted({row["dataElement"] for row in rows if is_dhis2_uid(row.get("dataElement"))})
-    if uids:
+    elements = {uid: known[uid] for uid in uids if uid in known}
+    missing = [uid for uid in uids if uid not in elements]
+    if missing:
         try:
-            elements = lookup_labels("data_elements", settings, uids)
+            elements.update(lookup_labels("data_elements", settings, missing))
         except Exception as exc:  # the connection, its token, or DHIS2 itself
             logger.warning("Could not resolve data element names for the dry-run sample: %s", exc)
 
@@ -503,21 +512,26 @@ def _spread_over_org_units(values: list[dict[str, Any]], limit: int, names: dict
 
 
 def feature_names(collection_id: str) -> dict[str, str]:
-    """Each stored feature's display name by its id; empty when the collection cannot be read."""
-    from open_climate_service.plugins.processes.load_features import load_features
+    """Each stored feature's display name by its id; empty when the collection cannot be read.
+
+    Reads only the id and name columns, never the geometry, which a large hierarchy makes heavy.
+    """
+    from open_climate_service.features import services as feature_services
+    from open_climate_service.features import store as feature_store
 
     try:
-        features = load_features(collection_id).get("features", [])
+        record = feature_services.registered_collections().get(collection_id)
+        if record is None or record.features is None:
+            raise ValueError(f"'{collection_id}' is not a registered feature collection")
+        id_property = record.features.id_property
+        rows = feature_store.read_feature_columns(record, [id_property, "displayName", "name"])
     except Exception as exc:  # not registered, or its store unreadable: the sample then shows ids
         logger.warning("Could not read feature names from '%s': %s", collection_id, exc)
         return {}
     names: dict[str, str] = {}
-    for feature in features:
-        properties = feature.get("properties") if isinstance(feature, dict) else None
-        if not isinstance(properties, dict):
-            continue
-        identifier = feature.get("id") or properties.get("id")
-        name = properties.get("displayName") or properties.get("name")
+    for row in rows:
+        identifier = row.get(id_property)
+        name = row.get("displayName") or row.get("name")
         if isinstance(identifier, str) and isinstance(name, str) and name:
             names[identifier] = name
     return names

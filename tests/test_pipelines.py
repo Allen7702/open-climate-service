@@ -3342,3 +3342,50 @@ def test_end_to_end_an_anomaly_dataset_publishes_and_drives_a_pipeline_to_dhis2(
     finally:
         job_service.shutdown()
         job_service_module.reset_job_service()
+
+
+def test_a_dry_run_names_data_elements_from_the_validation_without_asking_dhis2(
+    instance: None, monkeypatch: pytest.MonkeyPatch, executed: list[dict[str, Any]]
+) -> None:
+    client = _dhis2_lookups(monkeypatch)
+    monkeypatch.setattr(dhis2_destination, "feature_names", lambda collection_id: {})
+    record = store.create_record(_spec(), service.validate_pipeline(store.create_record(_spec(id="probe"))))
+    assert record.validation is not None
+    assert record.validation.labels["series.data_element"] == {_ELEMENT: "Rainfall total"}
+    asked_before = len(client.gets)
+
+    result = service.dry_run_pipeline(record, "2025-01-01", "2025-02-28")
+
+    assert result.error is None, result.error
+    assert result.sample[0]["dataElement"] == {"value": _ELEMENT, "label": "Rainfall total"}
+    assert [path for path, _ in client.gets[asked_before:] if path == "/api/dataElements"] == []
+
+
+def test_feature_names_read_only_the_id_and_name_columns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import geopandas as gpd
+    import pyarrow.parquet as pq
+    from shapely.geometry import Point
+
+    from open_climate_service.features import services as feature_services
+
+    path = tmp_path / "districts.parquet"
+    gpd.GeoDataFrame(
+        {"id": [_OU[0], _OU[1]], "displayName": ["Bo", "Bombali"], "level": [2, 2]},
+        geometry=[Point(-11.7, 7.9), Point(-12.1, 9.2)],
+        crs="EPSG:4326",
+    ).to_parquet(path)
+    record = SimpleNamespace(
+        dataset_id="districts", path=str(path), asset_paths=[], features=SimpleNamespace(id_property="id")
+    )
+    monkeypatch.setattr(feature_services, "registered_collections", lambda: {"districts": record})
+    read: list[list[str]] = []
+    real_read_table = pq.read_table
+
+    def spy(source: Any, *, columns: list[str], **kwargs: Any) -> Any:
+        read.append(list(columns))
+        return real_read_table(source, columns=columns, **kwargs)
+
+    monkeypatch.setattr(pq, "read_table", spy)
+
+    assert dhis2_destination.feature_names("districts") == {_OU[0]: "Bo", _OU[1]: "Bombali"}
+    assert read == [["id", "displayName"]], "the geometry and other columns stay on disk"

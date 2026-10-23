@@ -6,7 +6,7 @@ import datetime as dt
 import json
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -98,11 +98,16 @@ class Dhis2ExportPlugin(BaseExportPlugin):
         return dhis2_destination.lookup_labels(lookup, settings, values)
 
     def preview(
-        self, content: bytes, settings: dict[str, Any], context: DestinationContext, limit: int = 5
+        self,
+        content: bytes,
+        settings: dict[str, Any],
+        context: DestinationContext,
+        labels: Mapping[str, Mapping[str, str]] | None = None,
+        limit: int = 5,
     ) -> list[dict[str, Any]]:
         from open_climate_service.exports import dhis2_destination
 
-        return dhis2_destination.preview(content, settings, context, limit)
+        return dhis2_destination.preview(content, settings, context, labels, limit)
 
     def validate_mapping(self, mapping: dict[str, Any]) -> dict[str, Any]:
         allowed = {

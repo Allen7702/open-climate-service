@@ -443,7 +443,12 @@ def dry_run_pipeline(record: PipelineRecord, start: str, end: str) -> DryRunResu
         bindings=digest,
         values=rendered.record_count,
         periods=sorted(set(rendered.periods or ())),
-        sample=plugin.preview(rendered.content, spec.destination.settings, destination_context(spec, bound)),
+        sample=plugin.preview(
+            rendered.content,
+            spec.destination.settings,
+            destination_context(spec, bound),
+            record.validation.labels if record.validation else None,
+        ),
         report=report,
         rendered_only=report is None,
     )
