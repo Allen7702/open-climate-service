@@ -153,9 +153,8 @@ _NAV_ITEMS = (
     ("overview", "Overview", "/"),
     ("datasets", "Datasets", "/datasets"),
     ("data-sources", "Data sources", "/data-sources"),
+    ("automation", "Pipelines", "/pipelines"),
     ("workflows", "Workflows", "/workflows"),
-    ("schedules", "Schedules", "/schedules"),
-    ("pipelines", "Pipelines", "/pipelines"),
     ("processes", "Processes", "/processes"),
     ("map", "Map viewer", "/map"),
     ("api", "API", "/api"),
@@ -187,6 +186,24 @@ def page_nav(mount: str, current: str) -> Markup:
         for key, label, path in _NAV_ITEMS
     )
     return Markup('<nav class="rail" aria-label="Sections"><ul>{}</ul></nav>').format(items)
+
+
+# The pages under the Pipelines entry; the first is where it opens.
+_AUTOMATION_TABS = (
+    ("pipelines", "Pipelines", "/pipelines"),
+    ("schedules", "Schedules", "/schedules"),
+)
+
+
+def automation_tabs(mount: str, current: str) -> Markup:
+    """The tabs shared by the Pipelines and Schedules pages, with *current* marked."""
+    links = Markup("").join(
+        Markup('<a href="{}{}"{}>{}</a>').format(
+            mount, path, Markup(' aria-current="page"') if key == current else "", label
+        )
+        for key, label, path in _AUTOMATION_TABS
+    )
+    return Markup('<nav class="page-tabs automation-tabs" aria-label="Pipelines and schedules">{}</nav>').format(links)
 
 
 def _licence_label(template: dict[str, Any]) -> str | None:
@@ -555,7 +572,8 @@ def render_schedules_page(status: Any, mount: str, *, change_warning: str | None
         name=api_config.get_name(),
         logo=LOGO,
         styles=_read_asset("ocs_ui.css"),
-        nav=page_nav(mount, "schedules"),
+        nav=page_nav(mount, "automation"),
+        automation_tabs=automation_tabs(mount, "schedules"),
         read_only=api_config.is_read_only(),
         status=status,
         schedules=rows,
@@ -571,7 +589,7 @@ def render_schedule_delete_page(dataset_id: str, mount: str) -> str:
         name=api_config.get_name(),
         logo=LOGO,
         styles=_read_asset("ocs_ui.css"),
-        nav=page_nav(mount, "schedules"),
+        nav=page_nav(mount, "automation"),
         dataset_id=dataset_id,
     )
 
@@ -1427,6 +1445,7 @@ _API_GROUP_NOTES = {
     "openEO": "Process graphs: collections, processes, stored workflows, jobs and synchronous results.",
     "Extent": "The area this instance covers.",
     "Schedules": "Everything on the clock. Sync schedules, one per dataset, under /schedules/sync.",
+    "Automation": "How schedules, workflow triggers and pipelines connect, with each step's latest status.",
     "Exports": "Deliver an export to its destination, and follow the delivery job.",
     "Pipelines": "Run a reusable workflow over bound inputs and deliver its result: save, dry-run, run, pause.",
     "System": "Health, version and the landing page's JSON form.",
@@ -1946,6 +1965,9 @@ def render_pipelines_page(
                 "last_run": record.runs[0] if record.runs else None,
             }
         )
+    if tab == "list":
+        for row, (diagram, fed) in zip(rows, _pipeline_diagrams(rows, mount), strict=True):
+            row["diagram"], row["fed"] = diagram, fed
     draft = draft or {}
     selection = selection or {}
     arguments = dict((draft.get("workflow") or {}).get("arguments") or {})
@@ -1980,9 +2002,12 @@ def render_pipelines_page(
         name=api_config.get_name(),
         logo=LOGO,
         styles=_read_asset("ocs_ui.css"),
-        nav=page_nav(mount, "pipelines"),
+        nav=page_nav(mount, "automation"),
+        automation_tabs=automation_tabs(mount, "pipelines"),
         tab=tab,
         pipelines=rows,
+        legend=_automation_legend(),
+        list_script=_read_asset("ocs_list.js"),
         workflows=choices.get("workflows", []),
         destinations=choices.get("destinations", []),
         datasets=choices.get("datasets", []),
@@ -1998,6 +2023,60 @@ def render_pipelines_page(
         revision=revision,
         read_only=read_only,
     )
+
+
+def _automation_legend() -> Markup:
+    from open_climate_service.automation.graph import render_legend
+
+    return render_legend()
+
+
+def _pipeline_diagram(pipeline_id: str, workflow_id: str, mount: str) -> Markup:
+    """This pipeline's chain from the automation graph, drawn as an automation diagram.
+
+    The pipeline's own box links to the workflow it runs, not back to this page.
+    """
+    try:
+        from open_climate_service.automation.graph import build_graph, pipeline_focus, render_svg
+
+        node_id = f"workflow:pipeline:{pipeline_id}"
+        return render_svg(
+            pipeline_focus(build_graph(), pipeline_id),
+            mount,
+            current=node_id,
+            current_href=f"/workflows/{workflow_id}",
+        )
+    except Exception:
+        _log.exception("The automation diagram could not be drawn for pipeline '%s'", pipeline_id)
+        return Markup("")
+
+
+def _pipeline_diagrams(rows: list[dict[str, Any]], mount: str) -> list[tuple[Markup, bool]]:
+    """Each listed pipeline's chain, drawn from one read of the automation graph.
+
+    With each drawing, whether the pipeline reads any dataset or feature collection: one that
+    reads none still has its workflow and destination to draw, but nothing feeds it.
+    """
+    try:
+        from open_climate_service.automation.graph import build_graph, pipeline_focus, render_svg
+
+        graph = build_graph()
+        drawn: list[tuple[Markup, bool]] = []
+        for row in rows:
+            chain = pipeline_focus(graph, row["id"])
+            fed = any(node.kind in ("dataset", "features") for node in chain.nodes)
+            svg = render_svg(
+                chain,
+                mount,
+                current=f"workflow:pipeline:{row['id']}",
+                current_href=f"/workflows/{row['workflow']}",
+                key=row["id"],
+            )
+            drawn.append((svg, fed))
+        return drawn
+    except Exception:
+        _log.exception("The pipeline diagrams could not be drawn")
+        return [(Markup(""), True) for _ in rows]
 
 
 def render_pipeline_page(record: Any, runs: list[dict[str, Any]], mount: str) -> str:
@@ -2025,13 +2104,16 @@ def render_pipeline_page(record: Any, runs: list[dict[str, Any]], mount: str) ->
         {"name": name, "value": value if isinstance(value, str) else json.dumps(value)}
         for name, value in spec.workflow.arguments.items()
     ]
+    diagram = _pipeline_diagram(spec.id, spec.workflow.id, mount)
     return get_template("pipeline_page.html").render(
         version=app_version,
         mount=mount,
         name=api_config.get_name(),
         logo=LOGO,
         styles=_read_asset("ocs_ui.css"),
-        nav=page_nav(mount, "pipelines"),
+        nav=page_nav(mount, "automation"),
+        diagram=diagram,
+        legend=_automation_legend(),
         title=spec.name or spec.id,
         spec=spec,
         destination_title=destination_title,

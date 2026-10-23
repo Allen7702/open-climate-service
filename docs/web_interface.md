@@ -28,9 +28,8 @@ JavaScript.
 | **Overview** (`/`)        | The instance's extent on a globe, counts of datasets, data sources and workflows, the size of everything stored, plus access mode and version |
 | **Datasets** (`/datasets`) | The data this instance holds, with temporal coverage and publication status                                                        |
 | **Data sources** (`/data-sources`) | Data the instance can fetch from outside providers, rasters and feature collections, titled by dataset with the provider beneath |
+| **Pipelines** (`/pipelines`) | Configured workflow delivery, with pipeline diagrams and a secondary global view of dataset sync schedules |
 | **Workflows** (`/workflows`) | Each workflow and what it makes: a published dataset or an exported file                                                         |
-| **Schedules** (`/schedules`) | Everything on the instance's clock: each dataset's sync schedule, with pause, resume and delete; set up and edited on the dataset page |
-| **Pipelines** (`/pipelines`) | Run a registered workflow over its bound inputs and deliver the result to a destination such as DHIS2: validate, dry-run, go live, run, pause and delete |
 | **Processes** (`/processes`) | The processes this instance can run, tagged by origin and filterable by it                                                       |
 
 The overview counts the collections and links to them rather than listing them, so the root
@@ -88,6 +87,30 @@ Selecting a process opens its page: its description, origin and categories, its 
 and return value, the workflows on this instance that use it, and its reference links. As
 with datasets, the URL still returns the openEO process description as JSON to API clients;
 a browser gets the page, and `?f=json` and `?f=html` choose explicitly.
+
+### Pipelines and schedules (`/pipelines`)
+
+The primary navigation has one **Pipelines** entry, with two tabs: **Pipelines**, where it opens,
+and **Schedules**, a global operational view of dataset sync schedules. A schedule still belongs
+to its dataset and is configured on that dataset's page; placing the list here does not make it
+part of a pipeline. The Pipelines tab shows each pipeline as a diagram, or as a table with
+**List**; the choice is remembered in the browser.
+
+A pipeline's diagram draws the end-to-end data journey left to right: data source, datasets and
+feature collections, workflows, derived datasets, and destination. The pipeline is the whole
+diagram; each executable box inside it is a workflow. If an upstream workflow publishes a
+dataset consumed by the destination-facing workflow, that workflow and derived dataset appear
+in the same journey. An ingested dataset shows its recorded data source even when it has no sync
+schedule; a clock and schedule label appear on that connection only when a schedule exists.
+Solid arrows drive the next step, dashed arrows are inputs a step reads (a climate normal, a
+feature collection), and teal arrows deliver. A symbol over an arrow's label says what starts
+the step: a clock for a sync schedule, a bolt for an update of the dataset, a hand for a run
+started by hand. Each box shows its latest run and links to its page. `GET /automation/graph`
+returns the broader instance lineage from which each pipeline view is selected.
+
+Schedule results come from the process that runs the scheduler and reset when it restarts. On
+a deployment where a separate process runs the schedules, the public instance shows no runs
+yet.
 
 ### The Schedules page (`/schedules`)
 
