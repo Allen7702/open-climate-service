@@ -31,10 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 class ClockBeat(BaseModel):
-    """Which process runs the clock, and when it last said so."""
+    """Which process runs the clock, the timezone its crons fire in, and when it last said so."""
 
     pid: int
     host: str
+    # The clock's own ``scheduler.timezone``: another process may be configured with a different
+    # one, and a cron read in the wrong zone gives a shifted next check. None in a beat written
+    # before it was recorded.
+    timezone: str | None = None
     beat_at: datetime = Field(default_factory=utc_now)
 
     def is_live(self, within: timedelta) -> bool:
@@ -93,11 +97,12 @@ class SharedResultsStore:
             if kept != shared.results:
                 self._write(shared.model_copy(update={"results": kept}))
 
-    def beat(self) -> None:
-        """Record that this process runs the clock, now."""
+    def beat(self, timezone: str) -> None:
+        """Record that this process runs the clock, in ``timezone``, now."""
         with index_lock(self.path):
             shared = self.read()
-            self._write(shared.model_copy(update={"clock": ClockBeat(pid=os.getpid(), host=socket.gethostname())}))
+            beat = ClockBeat(pid=os.getpid(), host=socket.gethostname(), timezone=timezone)
+            self._write(shared.model_copy(update={"clock": beat}))
 
     def stop_beating(self) -> None:
         """Clear the heartbeat if it is this process's, so others stop reporting a clock at once."""

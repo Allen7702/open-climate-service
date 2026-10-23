@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -344,7 +345,7 @@ class SchedulerService:
     def beat(self) -> None:
         """Report through the shared data directory that the clock runs in this process."""
         try:
-            self._results.beat()
+            self._results.beat(self._config.timezone if self._config is not None else "UTC")
         except Exception:
             logger.exception("The clock's heartbeat could not be recorded")
 
@@ -412,13 +413,26 @@ class SchedulerService:
         return ClockStatus(here=False, beat_at=beat.beat_at)
 
     @staticmethod
-    def _next_from_cron(cron: str, config: SchedulerConfig) -> datetime | None:
-        """When the clock, running in another process, next fires this cron."""
+    def _clock_timezone(shared: SharedResults, clock: ClockStatus | None, config: SchedulerConfig) -> str:
+        """The zone the clock's crons fire in: its own when it runs elsewhere and said so, else ours."""
+        beat = shared.clock
+        if clock is None or clock.here or beat is None or not beat.timezone:
+            return config.timezone
         try:
-            trigger = CronTrigger.from_crontab(cron, timezone=config.timezone_info)
+            ZoneInfo(beat.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            return config.timezone
+        return beat.timezone
+
+    @staticmethod
+    def _next_from_cron(cron: str, timezone: str) -> datetime | None:
+        """When the clock, running in another process, next fires this cron in its ``timezone``."""
+        zone = ZoneInfo(timezone)
+        try:
+            trigger = CronTrigger.from_crontab(cron, timezone=zone)
         except ValueError:
             return None
-        fire: datetime | None = trigger.get_next_fire_time(None, utc_now().astimezone(config.timezone_info))
+        fire: datetime | None = trigger.get_next_fire_time(None, utc_now().astimezone(zone))
         return fire
 
     def status(self) -> ScheduleListResponse:
@@ -438,6 +452,7 @@ class SchedulerService:
             apscheduler_jobs = {job.id: job for job in self._scheduler.get_jobs()}
         shared = self._results.read()
         clock = self._clock_status(shared)
+        timezone = self._clock_timezone(shared, clock, config)
 
         schedules: list[ScheduleStatus] = []
         for entry in effective:
@@ -454,13 +469,13 @@ class SchedulerService:
                 if job is not None:
                     next_check = getattr(job, "next_run_time", None)
                 elif clock is not None and not clock.here and entry.schedule_id not in self._refused:
-                    next_check = self._next_from_cron(schedule.cron, config)
+                    next_check = self._next_from_cron(schedule.cron, timezone)
             schedules.append(
                 ScheduleStatus(
                     schedule_id=entry.schedule_id,
                     dataset_id=schedule.dataset_id,
                     cron=schedule.cron,
-                    timezone=config.timezone,
+                    timezone=timezone,
                     publish=schedule.publish,
                     max_attempts=schedule.max_attempts,
                     enabled=entry.enabled,
@@ -477,7 +492,7 @@ class SchedulerService:
             enabled=config.enabled,
             running=self._scheduler is not None,
             clock=clock,
-            timezone=config.timezone,
+            timezone=timezone,
             reload_error=self._reload_error,
             schedules=schedules,
         )

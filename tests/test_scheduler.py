@@ -502,3 +502,31 @@ def test_an_unreadable_results_file_reports_no_checks_instead_of_failing(tmp_pat
     (row,) = _other_process(store).status().schedules
 
     assert row.last_check is None
+
+
+def test_another_process_reads_the_cron_in_the_clocks_timezone(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The worker runs in Kathmandu time, the public instance in UTC: the next check is the worker's."""
+    from zoneinfo import ZoneInfo
+
+    store = SharedResultsStore(tmp_path / "schedule_results.json")
+    scheduler = MagicMock()
+    scheduler.get_jobs.return_value = []
+    monkeypatch.setattr("open_climate_service.scheduler.service.AsyncIOScheduler", lambda **_: scheduler)
+    monkeypatch.setattr("open_climate_service.scheduler.service.api_config.is_read_only", lambda: False)
+    clock = SchedulerService(
+        config_loader=lambda: SchedulerConfig(enabled=True, timezone="Asia/Kathmandu"),
+        store_loader=lambda: [_stored_schedule()],
+        template_loader=lambda _: _template(),
+        results=store,
+    )
+    clock.start()
+
+    status = _other_process(store).status()
+
+    assert status.timezone == "Asia/Kathmandu"
+    (row,) = status.schedules
+    assert row.timezone == "Asia/Kathmandu"
+    assert row.next_check is not None
+    local = row.next_check.astimezone(ZoneInfo("Asia/Kathmandu"))
+    assert (local.hour, local.minute) == (6, 0), "the cron '0 6 * * *' fires at 06:00 where the clock runs"
+    clock.shutdown()

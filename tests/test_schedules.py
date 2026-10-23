@@ -872,7 +872,7 @@ def test_pages_show_the_checks_of_a_clock_in_another_process(
     client = dataset_pages
     store.save_schedule(_stored("era5"), create=True)
     shared = SharedResultsStore()
-    shared.beat()
+    shared.beat("UTC")
     shared.record(
         CheckResult(
             schedule_id="dataset-sync:era5",
