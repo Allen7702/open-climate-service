@@ -306,27 +306,42 @@ def _check_configuration(spec: PipelineSpec) -> Check:
 
 
 def _check_schedule(bound: BoundWorkflow) -> Check:
-    """Report how the source datasets are kept current. The pipeline owns no sync clock of its own."""
-    raw = api_config.get_config().get("scheduler", {})
-    entries = raw.get("dataset_sync", []) if isinstance(raw, dict) else []
-    enabled = isinstance(raw, dict) and raw.get("enabled") is True
+    """Report how the source datasets are kept current. The pipeline owns no sync clock of its own.
+
+    Schedules live in the operator's JSON store, one per dataset; the instance switch that lets
+    the clock run stays in ``climate-service.yaml`` and is read the way the scheduler reads it,
+    so the two agree on what "enabled" means. A paused entry is reported, not counted.
+    """
+    from open_climate_service.scheduler import store as schedule_store
+    from open_climate_service.scheduler.config import get_scheduler_config
+
     if not bound.dataset_ids:
         return Check(id="schedule", status="skip", message="the workflow reads no managed dataset")
+    try:
+        enabled = get_scheduler_config().enabled
+    except ValueError as exc:
+        return Check(id="schedule", status="skip", message=f"the scheduler configuration is invalid: {exc}")
+    try:
+        stored = {item.dataset_id: item for item in schedule_store.list_schedules()}
+    except schedule_store.ScheduleStoreUnreadable as exc:
+        return Check(id="schedule", status="skip", message=f"the schedule store cannot be read: {exc}")
     parts: list[str] = []
     status: str = "pass"
     for dataset_id in bound.dataset_ids:
-        existing = [item for item in entries if isinstance(item, dict) and item.get("dataset_id") == dataset_id]
-        if not existing:
+        existing = stored.get(dataset_id)
+        if existing is None:
             status = "skip"
             parts.append(f"'{dataset_id}' has no sync schedule; it updates only after a manual sync")
+        elif not existing.enabled:
+            status = "skip"
+            parts.append(f"'{dataset_id}' has a sync schedule ({existing.cron!r}), but it is paused")
         elif not enabled:
             status = "skip"
             parts.append(
-                f"'{dataset_id}' has a sync schedule ({existing[0].get('cron', '?')!r}), but the instance scheduler "
-                "is disabled"
+                f"'{dataset_id}' has a sync schedule ({existing.cron!r}), but the instance scheduler is disabled"
             )
         else:
-            parts.append(f"'{dataset_id}' is synced on schedule {existing[0].get('cron', '?')!r}")
+            parts.append(f"'{dataset_id}' is synced on schedule {existing.cron!r}")
     return Check(id="schedule", status="pass" if status == "pass" else "skip", message="; ".join(parts))
 
 
