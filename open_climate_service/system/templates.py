@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from textwrap import dedent
@@ -39,6 +39,26 @@ def _template_source(name: str) -> str:
 
 
 _env = jinja2.Environment(loader=jinja2.FunctionLoader(_template_source), autoescape=True)
+
+
+def _when(value: Any) -> str:
+    """An ISO 8601 timestamp, or a datetime, as ``YYYY-MM-DD HH:MM UTC``; anything else as it came."""
+    if value is None or value == "":
+        return ""
+    moment = value
+    if isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    if not isinstance(moment, datetime):
+        return str(value)
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(UTC)
+    return moment.strftime("%Y-%m-%d %H:%M UTC")
+
+
+_env.filters["when"] = _when
 
 _cache: dict[str, jinja2.Template] = {}
 
@@ -1939,9 +1959,14 @@ def render_pipelines_page(
     editing: str | None = None,
     revision: int | None = None,
     selection: dict[str, Any] | None = None,
+    labels: dict[str, dict[str, str]] | None = None,
     read_only: bool = False,
 ) -> str:
-    """Render the pipeline listing, the creation tab, or the same tab prefilled for editing."""
+    """Render the pipeline listing, the creation tab, or the same tab prefilled for editing.
+
+    ``labels`` are how the destination's lookup values read, as the last validation resolved
+    them; the form shows them beside the stored values and searches the destination for new ones.
+    """
     from open_climate_service.pipelines import forms
     from open_climate_service.pipelines.service import approved
 
@@ -1979,6 +2004,7 @@ def render_pipelines_page(
             value = prefill
         parameter_fields.append({**field, "value": value})
     settings = dict((draft.get("destination") or {}).get("settings") or {})
+    labels = labels or {}
     settings_form: dict[str, Any] = selection.get("settings_form") or {
         "title": "",
         "description": "",
@@ -1992,7 +2018,20 @@ def render_pipelines_page(
             field = cast(dict[str, Any], raw_field)
             entry = {**field, "value": forms.setting_value(settings, field)}
             if field["kind"] == "rows":
-                entry["rows"] = forms.setting_rows(settings, field)
+                entry["rows"] = [
+                    {
+                        **row,
+                        "labels": {
+                            column["name"]: labels.get(f"{field['name']}.{column['name']}", {}).get(
+                                str(row["values"].get(column["name"])), ""
+                            )
+                            for column in field["columns"]
+                        },
+                    }
+                    for row in forms.setting_rows(settings, field)
+                ]
+            else:
+                entry["label"] = labels.get(field["name"], {}).get(entry["value"], "")
             rendered_fields.append(entry)
         rendered_sections.append({**section, "fields": rendered_fields})
     settings_form = {**settings_form, "sections": rendered_sections}
@@ -2008,6 +2047,7 @@ def render_pipelines_page(
         pipelines=rows,
         legend=_automation_legend(),
         list_script=_read_asset("ocs_list.js"),
+        lookup_script=_read_asset("ocs_lookup.js"),
         workflows=choices.get("workflows", []),
         destinations=choices.get("destinations", []),
         datasets=choices.get("datasets", []),
@@ -2086,11 +2126,13 @@ def render_pipeline_page(record: Any, runs: list[dict[str, Any]], mount: str) ->
     spec = record.spec
     validation = record.validation
     destination_title = spec.destination.plugin
+    settings_items: list[dict[str, Any]] = []
     plugin = destination_plugins().get(spec.destination.plugin)
     if plugin is not None:
         presentation = plugin.pipeline_settings_form()
         if presentation is not None:
             destination_title = presentation.title
+        settings_items = _settings_items(plugin, spec.destination.settings, validation.labels if validation else {})
     datasets = {d.dataset_id: d for d in _load_datasets()}
     coverages = [
         datasets[dataset_id].extent.temporal
@@ -2120,6 +2162,7 @@ def render_pipeline_page(record: Any, runs: list[dict[str, Any]], mount: str) ->
         revision=record.revision,
         arguments=arguments,
         settings=json.dumps(spec.destination.settings, indent=2),
+        settings_items=settings_items,
         export=json.dumps(validation.export, indent=2) if validation and validation.export else None,
         created_at=record.created_at,
         automation_since=record.automation_since,
@@ -2140,6 +2183,37 @@ def render_pipeline_page(record: Any, runs: list[dict[str, Any]], mount: str) ->
         range_end=range_end,
         read_only=api_config.is_read_only(),
     )
+
+
+def _settings_items(plugin: Any, settings: dict[str, Any], labels: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    """The destination settings as the form names them, each lookup value with the label it resolved to."""
+    from open_climate_service.pipelines import forms
+    from open_climate_service.pipelines.service import settings_fields
+
+    def cell(field: dict[str, Any], value: Any, path: str) -> dict[str, Any]:
+        text = json.dumps(value) if isinstance(value, (dict, list)) else "" if value is None else str(value)
+        return {"title": field["title"], "value": text, "label": labels.get(path, {}).get(text, "")}
+
+    items: list[dict[str, Any]] = []
+    for field in settings_fields(plugin):
+        if field["kind"] == "rows":
+            rows = [row for row in forms.setting_rows(settings, field) if row["existing"]]
+            items.append(
+                {
+                    "title": field["title"],
+                    "rows": [
+                        [
+                            cell(column, row["values"].get(column["name"]), f"{field['name']}.{column['name']}")
+                            for column in field["columns"]
+                            if row["values"].get(column["name"]) is not None
+                        ]
+                        for row in rows
+                    ],
+                }
+            )
+        elif settings.get(field["name"]) is not None:
+            items.append({**cell(field, settings.get(field["name"]), field["name"]), "rows": None})
+    return items
 
 
 def _pipeline_skipped_kept() -> int:
